@@ -1,0 +1,18 @@
+name: paperfetch-tests
+
+on:
+  push:
+    paths:
+      - "papers/**"
+  pull_request:
+    paths:
+      - "papers/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Run unit tests
+        run: uv run --project papers python -m unittest discover -s papers/tests -p "test_*.py" -v
