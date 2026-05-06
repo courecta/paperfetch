@@ -198,6 +198,16 @@ def _run_fetch(args: argparse.Namespace) -> int:
         print(f"Wrote manifest template: {args.init_manifest}")
         return 0
 
+    has_inputs = bool(args.manifest or args.from_python or args.paper or args.url)
+    if not has_inputs:
+        print("Usage: paperfetch fetch [OPTIONS] [--url URL ...] [--manifest PATH ...]")
+        print("\nCommon examples:")
+        print("  paperfetch fetch --url https://arxiv.org/abs/2501.00001")
+        print("  paperfetch fetch --manifest papers.csv")
+        print("  paperfetch fetch --url <url1> --url <url2> --out-dir ./project")
+        print("\nRun 'paperfetch fetch --help' for all options.")
+        return 0
+
     papers = collect_inputs(args.manifest, args.from_python, args.paper, args.url)
     options = _to_fetch_options(args)
 
@@ -460,12 +470,16 @@ def _run_mcp(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
-    if not argv:
-        argv = ["fetch", *argv]
-    elif argv[0] not in COMMANDS and argv[0] not in {"-h", "--help"}:
-        argv = ["fetch", *argv]
 
     parser = _build_parser()
+
+    if not argv:
+        parser.print_help()
+        return 0
+
+    if argv[0] not in COMMANDS and argv[0] not in {"-h", "--help", "--version", "-v"}:
+        argv = ["fetch", *argv]
+
     args = parser.parse_args(argv)
 
     if args.command == "fetch":
