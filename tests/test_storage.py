@@ -4,10 +4,10 @@ import json
 from pathlib import Path
 
 import pytest
+
 from paperfetch_app.storage import (
     clean_library,
     ensure_library_paths,
-    index_path,
     list_entries,
     load_index,
     materialize,

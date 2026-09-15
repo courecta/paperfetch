@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, TypeVar
-
+from typing import Any, TypeVar
 
 T = TypeVar("T")
 
@@ -16,10 +17,13 @@ def now_utc_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def safe_slug(value: str) -> str:
+def safe_slug(value: str, max_length: int = 80) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip().lower())
     cleaned = re.sub(r"-+", "-", cleaned)
-    return cleaned.strip("-") or "paper"
+    cleaned = cleaned.strip("-") or "paper"
+    if max_length and len(cleaned) > max_length:
+        cleaned = cleaned[:max_length].rstrip("-.")
+    return cleaned or "paper"
 
 
 def ensure_dir(path: Path) -> None:
@@ -28,6 +32,10 @@ def ensure_dir(path: Path) -> None:
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def sha256_file(path: Path) -> str:
@@ -41,8 +49,17 @@ def sha256_file(path: Path) -> str:
 def write_json_atomic(path: Path, payload: Any) -> None:
     ensure_dir(path.parent)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def read_json(path: Path, default: Any = None) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return default
 
 
 def retry_call(
@@ -59,8 +76,8 @@ def retry_call(
         except retriable_exceptions as exc:
             if attempt >= retries:
                 raise RuntimeError(f"{action_name} failed after {attempt + 1} attempts: {exc}") from exc
-            sleep_for = backoff_seconds * (2**attempt)
-            time.sleep(sleep_for)
+            window = backoff_seconds * (2**attempt)
+            time.sleep(random.uniform(window / 2.0, window) if window > 0 else 0.0)
             attempt += 1
 
 

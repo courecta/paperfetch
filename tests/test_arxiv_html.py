@@ -1,177 +1,159 @@
 from __future__ import annotations
 
 import pytest
-from bs4 import BeautifulSoup
 
-from paperfetch_app.arxiv_html import (
-    _convert_element,
-    _convert_table,
-    extract_markdown_from_html,
-)
+from paperfetch_app.extract.coverage import audit
+from paperfetch_app.extract.html_arxiv import LatexmlConverter
+from paperfetch_app.extract.render_markdown import render_markdown
 
+TABLE_FIXTURE = """
+<html><body><article class="ltx_document">
+<h2 class="ltx_title ltx_title_section"><span class="ltx_tag ltx_tag_section">1 </span>Results</h2>
+<figure class="ltx_table" id="S4.T1">
+  <figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_table">Table 1</span>:
+    <span>Operating conditions reported by <cite class="ltx_cite">[<a class="ltx_ref" href="#bib.bib36">36</a>]</cite>.</span>
+  </figcaption>
+  <table class="ltx_tabular ltx_centering" id="S4.T1.5">
+    <thead><tr>
+      <th class="ltx_th"><span>Name</span></th>
+      <th class="ltx_th"><span>Value</span></th>
+    </tr></thead>
+    <tbody>
+      <tr><th class="ltx_th">Temperature</th><td><math alttext="T"><annotation encoding="application/x-tex">T</annotation></math></td></tr>
+      <tr><td colspan="2">merged cell</td></tr>
+    </tbody>
+  </table>
+</figure>
+</article></body></html>
+"""
 
-class TestConvertElement:
-    def test_paragraph(self):
-        soup = BeautifulSoup("<p>Hello world</p>", "html.parser")
-        result = _convert_element(soup.p)
-        assert "Hello world" in result
+EQUATION_FIXTURE = """
+<html><body><article class="ltx_document">
+<table class="ltx_equationgroup ltx_eqn_align ltx_eqn_table" id="S2.EGx1">
+<tbody id="S2.E1"><tr class="ltx_equation ltx_eqn_row">
+  <td class="ltx_eqn_cell ltx_eqn_left_padleft"></td>
+  <td class="ltx_eqn_cell"><math alttext="a=b" display="inline"><annotation encoding="application/x-tex">a=b</annotation></math></td>
+  <td class="ltx_eqn_cell ltx_eqn_eqno"><span class="ltx_tag ltx_tag_equation">(1)</span></td>
+</tr></tbody>
+<tbody id="S2.E2"><tr class="ltx_equation ltx_eqn_row">
+  <td class="ltx_eqn_cell"><math alttext="c=d" display="inline"><annotation encoding="application/x-tex">c=d</annotation></math></td>
+  <td class="ltx_eqn_cell ltx_eqn_eqno"><span class="ltx_tag ltx_tag_equation">(2)</span></td>
+</tr></tbody>
+</table>
+<table class="ltx_equation ltx_eqn_table" id="S2.Ex1">
+<tbody><tr class="ltx_equation ltx_eqn_row">
+  <td class="ltx_eqn_cell ltx_align_left"><math display="block" alttext="e=f"><annotation encoding="application/x-tex">e=f</annotation></math></td>
+  <td class="ltx_eqn_cell ltx_eqn_eqno"><span class="ltx_tag ltx_tag_equation">(3)</span></td>
+</tr></tbody>
+</table>
+</article></body></html>
+"""
 
-    def test_heading(self):
-        soup = BeautifulSoup("<h2>Section Title</h2>", "html.parser")
-        result = _convert_element(soup.h2)
-        assert "## Section Title" in result
-
-    def test_bold(self):
-        soup = BeautifulSoup("<b>bold text</b>", "html.parser")
-        result = _convert_element(soup.b)
-        assert "**bold text**" in result
-
-    def test_italic(self):
-        soup = BeautifulSoup("<em>italic text</em>", "html.parser")
-        result = _convert_element(soup.em)
-        assert "*italic text*" in result
-
-    def test_link(self):
-        soup = BeautifulSoup('<a href="https://example.com">link</a>', "html.parser")
-        result = _convert_element(soup.a)
-        assert "[link](https://example.com)" in result
-
-    def test_code(self):
-        soup = BeautifulSoup("<code>print('hi')</code>", "html.parser")
-        result = _convert_element(soup.code)
-        assert "`print('hi')`" in result
-
-    def test_pre(self):
-        soup = BeautifulSoup("<pre>code block</pre>", "html.parser")
-        result = _convert_element(soup.pre)
-        assert "```" in result
-        assert "code block" in result
-
-    def test_list(self):
-        html = "<ul><li>item 1</li><li>item 2</li></ul>"
-        soup = BeautifulSoup(html, "html.parser")
-        result = _convert_element(soup.ul)
-        assert "- item 1" in result
-        assert "- item 2" in result
-
-    def test_math_inline(self):
-        html = '<p><math><mi>x</mi><mo>=</mo><mn>1</mn></math></p>'
-        soup = BeautifulSoup(html, "html.parser")
-        result = _convert_element(soup.p)
-        assert "$" in result
-
-    def test_math_display(self):
-        html = '<div><math display="block"><mi>x</mi></math></div>'
-        soup = BeautifulSoup(html, "html.parser")
-        result = _convert_element(soup.div)
-        assert "\\[" in result
-
-    def test_script_removed(self):
-        html = '<div><script>alert("x")</script>text</div>'
-        soup = BeautifulSoup(html, "html.parser")
-        result = _convert_element(soup.div)
-        assert "alert" not in result
-        assert "text" in result
+FIGURE_FIXTURE = """
+<html><body><article class="ltx_document">
+<figure class="ltx_figure" id="S4.F1">
+  <div class="ltx_flex_figure">
+    <span class="ltx_picture"><img src="2501.00001v1/Figures/a.png" alt="panel a"/></span>
+    <span class="ltx_picture"><img srcset="2501.00001v1/Figures/b-small.png 1x, 2501.00001v1/Figures/b.png 2x" alt="panel b"/></span>
+  </div>
+  <figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">Figure 1</span>:
+    Results for <math alttext="\\hat{t}=70"><annotation encoding="application/x-tex">\\hat{t}=70</annotation></math>.</figcaption>
+</figure>
+<figure class="ltx_figure" id="S4.F2">
+  <div><img src="p2.png"/></div>
+  <figcaption class="ltx_caption"><span class="ltx_tag ltx_tag_figure">Figure 2</span>: Second.</figcaption>
+</figure>
+</article></body></html>
+"""
 
 
-class TestConvertTable:
-    def test_simple_table(self):
-        html = """
-        <table>
-            <tr><th>A</th><th>B</th></tr>
-            <tr><td>1</td><td>2</td></tr>
-        </table>
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        result = _convert_table(soup.table)
-        assert "| A | B |" in result
-        assert "| 1 | 2 |" in result
-        assert "---" in result
-
-    def test_no_header(self):
-        html = "<table><tr><td>a</td><td>b</td></tr></table>"
-        soup = BeautifulSoup(html, "html.parser")
-        result = _convert_table(soup.table)
-        assert "| a | b |" in result
-
-    def test_empty_table(self):
-        html = "<table></table>"
-        soup = BeautifulSoup(html, "html.parser")
-        result = _convert_table(soup.table)
-        assert result == ""
+def _convert(html: str) -> object:
+    converter = LatexmlConverter(
+        key="test",
+        source_url="https://arxiv.org/html/2501.00001",
+        base_url="https://arxiv.org/html/2501.00001",
+    )
+    return converter.convert(html)
 
 
-class TestExtractMarkdownFromHtml:
-    def test_basic_document(self):
-        html = """
-        <html><body>
-        <h1>Title</h1>
-        <p>Paragraph 1</p>
-        <p>Paragraph 2</p>
-        </body></html>
-        """
-        result = extract_markdown_from_html(html)
-        assert "# Title" in result
-        assert "Paragraph 1" in result
-        assert "Paragraph 2" in result
+class TestTableConversion:
+    def test_table_body_is_preserved(self):
+        document = _convert(TABLE_FIXTURE)
+        tables = [block for block in document.blocks if block.kind == "table"]
+        assert len(tables) == 1
+        table = tables[0].table
+        assert table.id == "S4.T1"
+        assert table.label == "Table 1"
+        assert table.header_rows == 1
+        assert table.has_spans is True
+        assert table.rows[1][0].inlines[0].text == "Temperature"
 
-    def test_removes_scripts(self):
-        html = """
-        <html><body>
-        <script>alert('x')</script>
-        <p>Content</p>
-        </body></html>
-        """
-        result = extract_markdown_from_html(html)
-        assert "alert" not in result
-        assert "Content" in result
+    def test_caption_and_math_capture(self):
+        document = _convert(TABLE_FIXTURE)
+        table = next(block.table for block in document.blocks if block.kind == "table")
+        assert table.rows[1][1].inlines[0].kind == "math"
+        rendered = render_markdown(document, include_frontmatter=False)
+        assert "Temperature" in rendered
+        assert "merged cell" in rendered
+        assert "Table 1" in rendered
 
-    def test_paper_id_comment(self):
-        html = "<html><body><p>Text</p></body></html>"
-        result = extract_markdown_from_html(html, paper_id="2401.00001")
-        assert "<!-- arXiv:2401.00001 -->" in result
-
-    def test_collapses_whitespace(self):
-        html = "<html><body><p>A</p><p>B</p></body></html>"
-        result = extract_markdown_from_html(html)
-        # Should not have excessive blank lines
-        assert "\n\n\n\n" not in result
-
-    def test_empty_document(self):
-        html = "<html><body></body></html>"
-        result = extract_markdown_from_html(html)
-        assert result.strip() == ""
-
-    def test_unescapes_html_entities(self):
-        html = "<html><body><p>A &amp; B</p></body></html>"
-        result = extract_markdown_from_html(html)
-        assert "A & B" in result
+    def test_coverage_is_complete(self):
+        document = _convert(TABLE_FIXTURE)
+        report = audit(document)
+        assert report["ok"], report
+        assert report["source_counts"]["tables"] == 1
 
 
+class TestEquationConversion:
+    def test_equations_are_display_math_not_tables(self):
+        document = _convert(EQUATION_FIXTURE)
+        equations = [block for block in document.blocks if block.kind == "math"]
+        tables = [block for block in document.blocks if block.kind == "table"]
+        assert tables == []
+        assert [block.meta.get("label") for block in equations] == ["(1)", "(2)", "(3)"]
+        assert equations[0].tex == "a=b"
+        assert equations[2].tex == "e=f"
+
+    def test_rendered_with_tags(self):
+        document = _convert(EQUATION_FIXTURE)
+        rendered = render_markdown(document, include_frontmatter=False)
+        assert "\\tag{1}" in rendered
+        assert "| ---" not in rendered
+
+
+class TestFigureConversion:
+    def test_all_panels_captured(self):
+        document = _convert(FIGURE_FIXTURE)
+        figures = [block for block in document.blocks if block.kind == "figure"]
+        assert len(figures) == 2
+        first = figures[0].figure
+        assert first.label == "Figure 1"
+        assert len(first.images) == 2
+        assert first.images[0].src == "https://arxiv.org/html/2501.00001v1/Figures/a.png"
+        assert first.images[1].src.endswith("Figures/b.png")
+        assert "Results for" in render_markdown(document, include_frontmatter=False)
+
+    def test_coverage_counts_figures(self):
+        document = _convert(FIGURE_FIXTURE)
+        report = audit(document)
+        assert report["source_counts"]["figures"] == 2
+        assert report["mapped_counts"]["figures"] == 2
+
+
+def test_markdown_render_has_frontmatter():
+    document = _convert(TABLE_FIXTURE)
+    rendered = render_markdown(document, metadata={"authors": ["A"], "year": 2025})
+    assert rendered.startswith("---")
+    assert "paperfetch_key: test" in rendered
+
+
+@pytest.mark.network
 class TestArxivHtmlIntegration:
-    """Integration tests that hit real arXiv HTML (if available)."""
-
     def test_fetch_real_arxiv_html(self):
-        """Fetch a known arXiv paper with HTML."""
-        from paperfetch_app.arxiv_html import extract_arxiv_markdown
+        from paperfetch_app.extract.html_arxiv import extract_arxiv_document
 
-        try:
-            md = extract_arxiv_markdown("2501.00001")
-        except RuntimeError as exc:
-            if "404" in str(exc):
-                pytest.skip("arXiv HTML not available for this paper")
-            raise
-
-        assert len(md) > 1000
-        assert "#" in md  # Has headings
-
-    def test_fetch_metadata_for_real_paper(self):
-        """Fetch metadata for a known arXiv paper."""
-        from paperfetch_app.metadata import fetch_arxiv_metadata
-
-        meta = fetch_arxiv_metadata("2501.00001")
-        assert meta.title
-        assert len(meta.authors) > 0
-        assert meta.year is not None
-        assert meta.bibtex is not None
-        assert "@misc{" in meta.bibtex
+        document = extract_arxiv_document("2501.00001", key="k", source_url="https://arxiv.org/html/2501.00001")
+        assert len(document.blocks) > 100
+        assert any(block.kind == "table" for block in document.blocks)
+        assert any(block.kind == "figure" for block in document.blocks)
+        assert any(block.kind == "math" for block in document.blocks)

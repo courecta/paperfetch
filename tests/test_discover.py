@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+
 from paperfetch_app.discover import _to_discovered, format_discovered
 
 

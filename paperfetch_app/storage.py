@@ -9,7 +9,6 @@ from typing import Any
 from .io_utils import ensure_dir, write_json_atomic
 from .models import StorePaths
 
-
 INDEX_FILENAME = "index.json"
 
 
@@ -18,6 +17,7 @@ def index_path(library_dir: Path) -> Path:
 
 
 def ensure_library_paths(library_dir: Path, canonical_base: str) -> StorePaths:
+    """Legacy flat layout paths (kept for backwards compatibility)."""
     return StorePaths(
         pdf=library_dir / "pdfs" / f"{canonical_base}.pdf",
         md=library_dir / "md" / f"{canonical_base}.md",
@@ -78,6 +78,14 @@ def list_entries(index: dict[str, dict[str, Any]], limit: int | None = None) -> 
     return rows[:limit]
 
 
+def _entry_paths(library_dir: Path, entry: dict[str, Any]) -> tuple[Path | None, Path | None]:
+    pdf_rel = entry.get("pdf")
+    md_rel = entry.get("md")
+    pdf = library_dir / pdf_rel if isinstance(pdf_rel, str) else None
+    md = library_dir / md_rel if isinstance(md_rel, str) else None
+    return pdf, md
+
+
 def clean_library(
     library_dir: Path,
     index: dict[str, dict[str, Any]],
@@ -91,21 +99,26 @@ def clean_library(
     keys_to_remove: list[str] = []
 
     for key, entry in index.items():
-        pdf_rel = entry.get("pdf")
-        md_rel = entry.get("md")
-        if isinstance(pdf_rel, str):
-            active_rel.add(pdf_rel)
-        if isinstance(md_rel, str):
-            active_rel.add(md_rel)
+        pdf, md = _entry_paths(library_dir, entry)
+        if pdf is not None:
+            active_rel.add(str(pdf.relative_to(library_dir)))
+        if md is not None:
+            active_rel.add(str(md.relative_to(library_dir)))
 
-        pdf_exists = isinstance(pdf_rel, str) and (library_dir / pdf_rel).exists()
-        md_exists = isinstance(md_rel, str) and (library_dir / md_rel).exists()
-        if prune_missing_entries and not (pdf_exists and md_exists):
+        bundle_dir = library_dir / key
+        bundle_ok = (bundle_dir / "meta.json").exists()
+        legacy_ok = (md is not None and md.exists()) and (pdf is not None and pdf.exists())
+        if prune_missing_entries and not (bundle_ok or legacy_ok):
             keys_to_remove.append(key)
 
     for key in keys_to_remove:
         index.pop(key, None)
         removed_index_entries += 1
+
+    for sub in (".staging", ".trash"):
+        staging = library_dir / sub
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
     if remove_orphans:
         scan_dirs = [library_dir / "pdfs", library_dir / "md", library_dir / "meta"]
@@ -121,6 +134,16 @@ def clean_library(
                 if rel not in active_rel:
                     path.unlink(missing_ok=True)
                     removed_orphans += 1
+
+        known_keys = set(index.keys())
+        for child in library_dir.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            if child.name in {"pdfs", "md", "meta", "locks", "converted"}:
+                continue
+            if child.name not in known_keys and (child / "meta.json").exists():
+                shutil.rmtree(child, ignore_errors=True)
+                removed_orphans += 1
 
     return {
         "removed_index_entries": removed_index_entries,

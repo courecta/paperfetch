@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 from paperfetch_app.bibtex import _generate_bibtex, export_bibtex
 
 

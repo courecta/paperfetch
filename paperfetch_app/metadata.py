@@ -4,14 +4,15 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-import requests
 from bs4 import BeautifulSoup
 
-from .io_utils import retry_call
+from .fetch.http import HttpClient
 
-USER_AGENT = "paperfetch/2.0 (requests; arxiv-metadata)"
-ARXIV_API_URL = "http://export.arxiv.org/api/query"
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
 ARXIV_BIBTEX_URL = "https://arxiv.org/bibtex/{paper_id}"
+CROSSREF_API_URL = "https://api.crossref.org/works/{doi}"
+OPENALEX_API_URL = "https://api.openalex.org/works/doi:{doi}"
+UNPAYWALL_API_URL = "https://api.unpaywall.org/v2/{doi}"
 
 
 @dataclass(frozen=True)
@@ -28,57 +29,77 @@ class ArxivMetadata:
     updated: str | None
     bibtex: str | None
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "authors": self.authors,
+            "abstract": self.abstract,
+            "year": self.year,
+            "categories": self.categories,
+            "primary_category": self.primary_category,
+            "doi": self.doi,
+            "published": self.published,
+            "updated": self.updated,
+            "bibtex": self.bibtex,
+            "arxiv_id": self.paper_id,
+        }
+
 
 def _parse_year_from_date(date_str: str | None) -> int | None:
     if not date_str:
         return None
-    m = re.search(r"(\d{4})", date_str)
-    return int(m.group(1)) if m else None
+    match = re.search(r"(\d{4})", date_str)
+    return int(match.group(1)) if match else None
 
 
-def fetch_arxiv_api_metadata(paper_id: str, timeout_sec: int = 30, retries: int = 2, backoff: float = 1.5) -> dict[str, Any]:
-    """Fetch raw metadata from arXiv Atom API."""
-    params = {"search_query": f"id:{paper_id}", "max_results": "1"}
-    headers = {"User-Agent": USER_AGENT}
-
-    def _once() -> dict[str, Any]:
-        resp = requests.get(ARXIV_API_URL, params=params, headers=headers, timeout=timeout_sec)
-        resp.raise_for_status()
-        return {"text": resp.text, "url": resp.url}
-
-    return retry_call(
-        action_name="arxiv api metadata",
-        func=_once,
-        retries=retries,
-        backoff_seconds=backoff,
-        retriable_exceptions=(requests.RequestException, OSError),
-    )
+def _client(client: HttpClient | None, **kwargs: Any) -> tuple[HttpClient, bool]:
+    if client is not None:
+        return client, False
+    return HttpClient(**kwargs), True
 
 
-def fetch_arxiv_bibtex(paper_id: str, timeout_sec: int = 30, retries: int = 2, backoff: float = 1.5) -> str | None:
-    """Fetch BibTeX entry from arXiv. Returns None if unavailable."""
-    url = ARXIV_BIBTEX_URL.format(paper_id=paper_id)
-    headers = {"User-Agent": USER_AGENT}
-
-    def _once() -> str:
-        resp = requests.get(url, headers=headers, timeout=timeout_sec)
-        resp.raise_for_status()
-        return resp.text
-
+def fetch_arxiv_api_metadata(
+    paper_id: str,
+    timeout_sec: int = 30,
+    retries: int = 2,
+    backoff: float = 1.5,
+    client: HttpClient | None = None,
+) -> str:
+    owns = client is None
+    client = client or HttpClient(timeout=timeout_sec, retries=retries, backoff=backoff)
     try:
-        return retry_call(
-            action_name="arxiv bibtex",
-            func=_once,
+        return client.get_text(
+            ARXIV_API_URL,
+            params={"search_query": f"id:{paper_id}", "max_results": "1"},
+            timeout=timeout_sec,
             retries=retries,
-            backoff_seconds=backoff,
-            retriable_exceptions=(requests.RequestException, OSError),
+            backoff=backoff,
         )
+    finally:
+        if owns:
+            client.close()
+
+
+def fetch_arxiv_bibtex(
+    paper_id: str,
+    timeout_sec: int = 30,
+    retries: int = 2,
+    backoff: float = 1.5,
+    client: HttpClient | None = None,
+) -> str | None:
+    url = ARXIV_BIBTEX_URL.format(paper_id=paper_id)
+    owns = client is None
+    client = client or HttpClient(timeout=timeout_sec, retries=retries, backoff=backoff)
+    try:
+        return client.get_text(url, timeout=timeout_sec, retries=retries, backoff=backoff)
     except Exception:
         return None
+    finally:
+        if owns:
+            client.close()
 
 
 def parse_arxiv_api_response(xml_text: str) -> dict[str, Any]:
-    """Parse arXiv Atom XML into a plain dict."""
     soup = BeautifulSoup(xml_text, "xml")
     entry = soup.find("entry")
     if not entry:
@@ -123,13 +144,26 @@ def parse_arxiv_api_response(xml_text: str) -> dict[str, Any]:
     }
 
 
-def fetch_arxiv_metadata(paper_id: str, timeout_sec: int = 30, retries: int = 2, backoff: float = 1.5) -> ArxivMetadata:
-    """Fetch and parse full metadata for an arXiv paper."""
-    raw = fetch_arxiv_api_metadata(paper_id, timeout_sec=timeout_sec, retries=retries, backoff=backoff)
-    parsed = parse_arxiv_api_response(raw["text"])
-
-    # Fetch bibtex in parallel or sequentially; keep it simple here
-    bibtex = fetch_arxiv_bibtex(paper_id, timeout_sec=timeout_sec, retries=retries, backoff=backoff)
+def fetch_arxiv_metadata(
+    paper_id: str,
+    timeout_sec: int = 30,
+    retries: int = 2,
+    backoff: float = 1.5,
+    client: HttpClient | None = None,
+) -> ArxivMetadata:
+    owns = client is None
+    client = client or HttpClient(timeout=timeout_sec, retries=retries, backoff=backoff)
+    try:
+        xml_text = fetch_arxiv_api_metadata(
+            paper_id, timeout_sec=timeout_sec, retries=retries, backoff=backoff, client=client
+        )
+        parsed = parse_arxiv_api_response(xml_text)
+        bibtex = fetch_arxiv_bibtex(
+            paper_id, timeout_sec=timeout_sec, retries=retries, backoff=backoff, client=client
+        )
+    finally:
+        if owns:
+            client.close()
 
     return ArxivMetadata(
         paper_id=paper_id,

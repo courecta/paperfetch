@@ -203,6 +203,7 @@ class TestExportBibtex:
         assert resp.status_code == 404
 
 
+@pytest.mark.network
 class TestDiscoverEndpoint:
     def test_discover_json(self, populated_library: Path):
         app = create_app(populated_library)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 from paperfetch_app.identity import build_identity, normalize_url
 
 

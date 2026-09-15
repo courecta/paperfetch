@@ -4,11 +4,9 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-import requests
+from .fetch.http import HttpClient
+from .io_utils import safe_slug
 
-from .io_utils import retry_call, safe_slug
-
-USER_AGENT = "paperfetch/2.0 (requests; semantic-scholar)"
 S2_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 S2_FIELDS = "title,authors,year,abstract,openAccessPdf,venue,externalIds,isOpenAccess,publicationTypes,citationCount"
 
@@ -40,22 +38,20 @@ def _to_discovered(raw: dict[str, Any]) -> DiscoveredPaper | None:
     citation_count = raw.get("citationCount")
 
     open_access_pdf = raw.get("openAccessPdf")
-    url = open_access_pdf.get("url") if isinstance(open_access_pdf, dict) else None
+    pdf_url = open_access_pdf.get("url") if isinstance(open_access_pdf, dict) else None
 
     external_ids = raw.get("externalIds", {}) or {}
     arxiv_id = external_ids.get("ArXiv") or external_ids.get("arXiv")
     doi = external_ids.get("DOI")
 
-    # Prefer arXiv abstract URL if available
     if arxiv_id:
         url = f"https://arxiv.org/abs/{arxiv_id}"
     elif doi:
         url = f"https://doi.org/{doi}"
-    elif not url:
-        # Fallback to Semantic Scholar page
+    elif pdf_url:
+        url = pdf_url
+    else:
         url = f"https://www.semanticscholar.org/paper/{raw.get('paperId', '')}"
-
-    is_open_access = bool(raw.get("isOpenAccess"))
 
     return DiscoveredPaper(
         paper_id=raw.get("paperId", ""),
@@ -67,7 +63,7 @@ def _to_discovered(raw: dict[str, Any]) -> DiscoveredPaper | None:
         url=url,
         arxiv_id=arxiv_id,
         doi=doi,
-        is_open_access=is_open_access,
+        is_open_access=bool(raw.get("isOpenAccess")),
         citation_count=citation_count,
     )
 
@@ -82,6 +78,7 @@ def search_semantic_scholar(
     timeout_sec: int = 30,
     retries: int = 2,
     backoff: float = 1.5,
+    client: HttpClient | None = None,
 ) -> list[DiscoveredPaper]:
     """Search Semantic Scholar and return discovered papers."""
     params: dict[str, str | int] = {
@@ -89,33 +86,28 @@ def search_semantic_scholar(
         "fields": S2_FIELDS,
         "limit": limit,
     }
-
-    # Build year filter string if provided
     if year_start is not None or year_end is not None:
         start = year_start if year_start is not None else ""
         end = year_end if year_end is not None else ""
         params["publicationDateOrYear"] = f"{start}:{end}"
-
     if open_access_only:
         params["openAccessPdf"] = "true"
-
     if venue:
         params["venue"] = venue
 
-    headers = {"User-Agent": USER_AGENT}
-
-    def _once() -> dict[str, Any]:
-        resp = requests.get(S2_SEARCH_URL, params=params, headers=headers, timeout=timeout_sec)
-        resp.raise_for_status()
-        return resp.json()
-
-    data = retry_call(
-        action_name="semantic scholar search",
-        func=_once,
-        retries=retries,
-        backoff_seconds=backoff,
-        retriable_exceptions=(requests.RequestException, OSError),
-    )
+    owns = client is None
+    client = client or HttpClient(timeout=timeout_sec, retries=retries, backoff=backoff)
+    try:
+        data = client.get_json(
+            S2_SEARCH_URL,
+            params=params,
+            timeout=timeout_sec,
+            retries=retries,
+            backoff=backoff,
+        )
+    finally:
+        if owns:
+            client.close()
 
     results: list[DiscoveredPaper] = []
     for raw in data.get("data", []):
@@ -141,7 +133,7 @@ def format_discovered(papers: list[DiscoveredPaper], fmt: str) -> str:
     if fmt in ("json", "manifest"):
         payload = []
         for p in papers:
-            entry = {
+            entry: dict[str, Any] = {
                 "slug": safe_slug(p.title),
                 "title": p.title,
                 "url": p.url,
@@ -152,6 +144,10 @@ def format_discovered(papers: list[DiscoveredPaper], fmt: str) -> str:
                 entry["venue"] = p.venue
             if p.abstract:
                 entry["abstract"] = p.abstract
+            if p.arxiv_id:
+                entry["arxiv_id"] = p.arxiv_id
+            if p.doi:
+                entry["doi"] = p.doi
             payload.append(entry)
         return json.dumps(payload, indent=2) + "\n"
 

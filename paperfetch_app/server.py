@@ -5,24 +5,100 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from .bibtex import export_bibtex
-from .config import get_default_marker_venv
+from .bundle import bundle_paths
+from .config import get_default_marker_venv, get_library_db_path
 from .discover import format_discovered, search_semantic_scholar
+from .errors import PaperfetchError
+from .fetch.http import HttpClient
 from .identity import build_identity
-from .marker_backend import ensure_marker_command
-from .models import FetchOptions, PaperInput
-from .pipeline import run_fetch
+from .models import PaperInput
+from .resolve.base import resolve
+from .runtime import default_fetch_options, fetch_and_record, locked_load_index
 from .storage import index_path, list_entries, load_index
+
+
+def _entry_markdown_path(library_dir: Path, key: str, entry: dict[str, Any]) -> Path | None:
+    md_rel = entry.get("md")
+    if isinstance(md_rel, str):
+        candidate = library_dir / md_rel
+        if candidate.exists():
+            return candidate
+    final = bundle_paths(library_dir, key)
+    if final.markdown.exists():
+        return final.markdown
+    return None
 
 
 def create_app(library_dir: Path, marker_venv: Path | None = None) -> FastAPI:
     library_dir = library_dir.expanduser().resolve()
     marker_venv = (marker_venv or get_default_marker_venv()).expanduser().resolve()
 
-    app = FastAPI(title="paperfetch", version="0.3.0")
+    app = FastAPI(title="paperfetch", version="0.4.0")
+
+    try:
+        from . import service
+
+        if not get_library_db_path(library_dir).exists() and any(
+            child.is_dir() and (child / "meta.json").exists() for child in library_dir.iterdir()
+        ):
+            service.reindex(library_dir)
+    except Exception:
+        pass
+
+    @app.get("/api/v1/search")
+    def search_library(
+        q: str,
+        key: str | None = None,
+        limit: int = Query(20, ge=1, le=100),
+    ) -> dict[str, Any]:
+        from . import service
+
+        return {"results": service.grep(library_dir, q, key=key, limit=limit)}
+
+    @app.get("/api/v1/papers/{key}/outline")
+    def paper_outline(key: str) -> dict[str, Any]:
+        from . import service
+
+        return {"key": key, "sections": service.outline(library_dir, key)}
+
+    @app.get("/api/v1/papers/{key}/read")
+    def paper_read(
+        key: str,
+        section: str | None = None,
+        offset: int = 0,
+        max_chars: int = Query(8000, ge=1, le=200000),
+    ) -> dict[str, Any]:
+        from . import service
+
+        try:
+            return service.read(library_dir, key, section=section, offset=offset, max_chars=max_chars)
+        except (KeyError, PaperfetchError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/v1/papers/{key}/tables/{ref}")
+    def paper_table(key: str, ref: str) -> dict[str, Any]:
+        from . import service
+
+        record = service.get_table(library_dir, key, ref)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Table not found")
+        return record
+
+    @app.post("/api/v1/papers/{key}/annotations")
+    def add_annotation(key: str, quote: str, note: str = "") -> dict[str, Any]:
+        from . import service
+
+        annotation_id = service.annotate(library_dir, key, quote, note)
+        return {"id": annotation_id}
+
+    @app.get("/api/v1/papers/{key}/annotations")
+    def get_annotations(key: str) -> dict[str, Any]:
+        from . import service
+
+        return {"annotations": service.annotations(library_dir, key)}
 
     @app.get("/api/v1/papers")
     def list_papers(
@@ -30,62 +106,72 @@ def create_app(library_dir: Path, marker_venv: Path | None = None) -> FastAPI:
         offset: int = Query(0, ge=0),
         query: str | None = Query(None),
     ) -> dict[str, Any]:
-        idx = load_index(index_path(library_dir))
+        idx = locked_load_index(library_dir)
         rows = list_entries(idx, limit=None)
 
         if query:
             q = query.lower()
             rows = [
-                (k, v) for k, v in rows
+                (k, v)
+                for k, v in rows
                 if q in str(v.get("title", "")).lower()
                 or q in str(v.get("abstract", "")).lower()
                 or q in str(v.get("authors", "")).lower()
             ]
 
         total = len(rows)
-        rows = rows[offset:offset + limit]
-
-        return {
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "papers": [{"key": k, **v} for k, v in rows],
-        }
+        rows = rows[offset : offset + limit]
+        return {"total": total, "limit": limit, "offset": offset, "papers": [{"key": k, **v} for k, v in rows]}
 
     @app.get("/api/v1/papers/{key}")
-    def get_paper(key: str) -> dict[str, Any]:
-        idx = load_index(index_path(library_dir))
+    def get_paper(key: str, include_markdown: bool = Query(True)) -> dict[str, Any]:
+        idx = locked_load_index(library_dir)
         entry = idx.get(key)
         if not entry:
             raise HTTPException(status_code=404, detail="Paper not found")
 
         result: dict[str, Any] = {"key": key, **entry}
-
-        # Include markdown content if available
-        md_rel = entry.get("md")
-        if isinstance(md_rel, str):
-            md_path = library_dir / md_rel
-            if md_path.exists():
-                result["markdown"] = md_path.read_text(encoding="utf-8")
-
+        if include_markdown:
+            md_path = _entry_markdown_path(library_dir, key, entry)
+            if md_path is not None:
+                result["markdown"] = md_path.read_text(encoding="utf-8", errors="replace")
         return result
+
+    @app.get("/api/v1/papers/{key}/markdown", response_class=PlainTextResponse)
+    def get_markdown(key: str) -> str:
+        idx = locked_load_index(library_dir)
+        entry = idx.get(key)
+        if not entry:
+            raise HTTPException(status_code=404, detail="Paper not found")
+        md_path = _entry_markdown_path(library_dir, key, entry)
+        if md_path is None:
+            raise HTTPException(status_code=404, detail="Markdown not available")
+        return md_path.read_text(encoding="utf-8", errors="replace")
+
+    @app.get("/api/v1/papers/{key}/figures/{name}")
+    def get_figure(key: str, name: str) -> FileResponse:
+        if "/" in name or "\\" in name or name.startswith("."):
+            raise HTTPException(status_code=400, detail="Invalid figure name")
+        final = bundle_paths(library_dir, key)
+        candidate = final.figures_dir / name
+        if not candidate.is_file():
+            raise HTTPException(status_code=404, detail="Figure not found")
+        return FileResponse(candidate)
 
     @app.get("/api/v1/library/stats")
     def library_stats() -> dict[str, Any]:
-        idx = load_index(index_path(library_dir))
+        idx = locked_load_index(library_dir)
         extractors: dict[str, int] = {}
         years: dict[int, int] = {}
         categories: dict[str, int] = {}
-
         for entry in idx.values():
-            ext = entry.get("extractor", "unknown")
+            ext = str(entry.get("extractor", "unknown"))
             extractors[ext] = extractors.get(ext, 0) + 1
             y = entry.get("year")
             if y:
-                years[y] = years.get(y, 0) + 1
-            for cat in entry.get("categories", []):
-                categories[cat] = categories.get(cat, 0) + 1
-
+                years[int(y)] = years.get(int(y), 0) + 1
+            for cat in entry.get("categories", []) or []:
+                categories[str(cat)] = categories.get(str(cat), 0) + 1
         return {
             "total_papers": len(idx),
             "by_extractor": extractors,
@@ -99,66 +185,46 @@ def create_app(library_dir: Path, marker_venv: Path | None = None) -> FastAPI:
         extractor: str = "auto"
         force_download: bool = False
         refresh_md: bool = False
+        allow_incomplete: bool = False
+        download_figures: bool = True
+        pdf_visual: bool = True
 
     @app.post("/api/v1/fetch")
     def fetch_papers(req: FetchRequest) -> dict[str, Any]:
-        marker_cmd: str | None = None
-        if req.extractor != "arxiv_html":
-            marker_cmd = ensure_marker_command(
-                marker_venv=marker_venv,
-                allow_install=True,
-                verbose=False,
-            )
-            if marker_cmd is None and req.extractor == "marker":
-                raise HTTPException(status_code=500, detail="Marker not available")
-
         papers: list[PaperInput] = []
         for url in req.urls:
-            papers.append(PaperInput(
-                slug=req.titles.get(url, ""),
-                title=req.titles.get(url, ""),
-                url=url,
-                source="api",
-            ))
-
+            title = req.titles.get(url, "")
+            papers.append(PaperInput(slug=title or "", title=title, url=url, source="api"))
         if not papers:
             raise HTTPException(status_code=400, detail="No URLs provided")
 
-        options = FetchOptions(
-            library_dir=library_dir,
-            out_dir=None,
-            project_files="none",
-            link_mode="copy",
-            overwrite=False,
+        options = default_fetch_options(
+            library_dir,
+            extractor=req.extractor,
             force_download=req.force_download,
             refresh_md=req.refresh_md,
-            dry_run=False,
-            download_timeout=120,
-            marker_timeout=900,
-            download_retries=2,
-            marker_retries=1,
-            download_backoff=1.5,
-            marker_backoff=2.0,
-            workers=4,
-            min_md_chars=300,
-            min_md_lines=8,
-            allow_low_quality_md=False,
-            verbose=False,
-            extractor=req.extractor,
+            marker_venv=marker_venv,
+            allow_incomplete=req.allow_incomplete,
+            download_figures=req.download_figures,
+            pdf_visual=req.pdf_visual,
         )
+        results = fetch_and_record(papers, options)
 
-        snapshot = load_index(index_path(library_dir))
-        results = run_fetch(papers, options, marker_cmd, snapshot)
-
-        successes = []
-        failures = []
-        for r in results:
-            if r.success:
-                successes.append({"key": r.key, "title": r.paper.title, "index_entry": r.index_entry})
-            else:
-                failures.append({"key": r.key, "title": r.paper.title, "error": r.error})
-
+        successes = [
+            {"key": r.key, "title": r.paper.title or (r.index_entry or {}).get("title"), "index_entry": r.index_entry}
+            for r in results
+            if r.success
+        ]
+        failures = [{"key": r.key, "title": r.paper.title, "error": r.error} for r in results if not r.success]
         return {"successes": successes, "failures": failures}
+
+    @app.post("/api/v1/resolve")
+    def resolve_endpoint(url: str) -> dict[str, Any]:
+        client = HttpClient(timeout=30, retries=1)
+        try:
+            return resolve(build_identity(url), client).to_dict()
+        finally:
+            client.close()
 
     @app.post("/api/v1/discover")
     def discover_papers(
@@ -188,8 +254,8 @@ def create_app(library_dir: Path, marker_venv: Path | None = None) -> FastAPI:
                 open_access_only=open_access,
                 venue=venue,
             )
-        except RuntimeError as exc:
-            raise HTTPException(status_code=429, detail=str(exc))
+        except PaperfetchError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
 
         if output_format == "urls":
             return PlainTextResponse(format_discovered(papers, "urls"))
@@ -202,18 +268,17 @@ def create_app(library_dir: Path, marker_venv: Path | None = None) -> FastAPI:
         key: list[str] = Query(default_factory=list),
         all: bool = Query(False),
     ) -> PlainTextResponse:
+        from .bibtex import export_bibtex
+
         idx = load_index(index_path(library_dir))
         keys = set(key)
         if all:
             keys.update(idx.keys())
-
         if not keys:
             raise HTTPException(status_code=400, detail="No keys specified. Use ?key=... or ?all=true")
-
         entries = [idx[k] for k in keys if k in idx]
         if not entries:
             raise HTTPException(status_code=404, detail="No matching entries")
-
         return PlainTextResponse(export_bibtex(entries), media_type="application/x-bibtex")
 
     return app

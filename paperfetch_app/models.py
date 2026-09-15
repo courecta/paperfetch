@@ -20,6 +20,7 @@ class PaperIdentity:
     fingerprint: str
     key: str
     normalized_url: str
+    version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -32,25 +33,34 @@ class StorePaths:
 @dataclass(frozen=True)
 class FetchOptions:
     library_dir: Path
-    out_dir: Path | None
-    project_files: str
-    link_mode: str
-    overwrite: bool
-    force_download: bool
-    refresh_md: bool
-    dry_run: bool
-    download_timeout: int
-    marker_timeout: int
-    download_retries: int
-    marker_retries: int
-    download_backoff: float
-    marker_backoff: float
-    workers: int
-    min_md_chars: int
-    min_md_lines: int
-    allow_low_quality_md: bool
-    verbose: bool
-    extractor: str  # "auto", "marker", "arxiv_html"
+    out_dir: Path | None = None
+    project_files: str = "md"
+    link_mode: str = "copy"
+    overwrite: bool = False
+    force_download: bool = False
+    refresh_md: bool = False
+    dry_run: bool = False
+    download_timeout: int = 120
+    marker_timeout: int = 900
+    download_retries: int = 3
+    marker_retries: int = 1
+    download_backoff: float = 1.5
+    marker_backoff: float = 2.0
+    workers: int = 4
+    min_md_chars: int = 300
+    min_md_lines: int = 8
+    allow_low_quality_md: bool = False
+    verbose: bool = False
+    extractor: str = "auto"  # auto | arxiv_html | marker | pymupdf
+    min_coverage: float = 0.95
+    allow_incomplete: bool = False
+    download_figures: bool = True
+    pdf_visual: bool = True
+    max_asset_bytes: int = 25 * 1024 * 1024
+    marker_venv: Path | None = None
+    install_marker: bool = True
+    prefer_pymupdf: bool = False
+    pdf_path: Path | None = None
 
 
 @dataclass
@@ -61,3 +71,5 @@ class ProcessResult:
     index_entry: dict[str, Any] | None = None
     error: str | None = None
     dry_run: bool = False
+    resolution: dict[str, Any] | None = None
+    coverage: dict[str, Any] | None = None

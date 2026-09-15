@@ -18,6 +18,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
-        run: uv sync --dev
-      - name: Run tests
-        run: uv run pytest tests/ -v
+        run: uv sync --frozen --group dev
+      - name: Lint
+        run: uv run ruff check paperfetch_app tests
+      - name: Run tests (no network)
+        run: uv run pytest tests/ -q -m "not network"

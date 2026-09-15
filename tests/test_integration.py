@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from paperfetch_app.models import FetchOptions, PaperInput
 from paperfetch_app.pipeline import process_one, run_fetch
 from paperfetch_app.storage import load_index

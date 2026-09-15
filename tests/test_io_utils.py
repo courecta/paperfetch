@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from paperfetch_app.io_utils import (
     check_markdown_quality,
     ensure_dir,
