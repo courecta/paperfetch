@@ -465,7 +465,9 @@ def process_one(
 
                 _write_text(staging.markdown, markdown_text)
                 _write_text(staging.text, text_output)
-                if used_extractor == "arxiv_html":
+                # Any extractor that produces table blocks gets sidecars, not
+                # just arXiv HTML; marker's layout model finds tables too.
+                if any(block.kind == "table" for block in document.blocks):
                     assets_module.write_table_sidecars(document, staging)
                 if source_html is not None:
                     _write_text(staging.source, source_html)

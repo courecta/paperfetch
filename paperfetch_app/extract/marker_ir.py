@@ -126,6 +126,27 @@ def _safe_name(raw: str, suffix: str = ".png") -> str:
     return cleaned if cleaned.lower().endswith((".png", ".jpg", ".jpeg", ".webp")) else f"{cleaned}{suffix}"
 
 
+def _table_html(node: dict[str, Any]) -> str:
+    """Find the markup that actually contains the grid.
+
+    A TableGroup's own html is a <content-ref> placeholder pointing at its
+    children, so it is non-empty but has no rows; the real <table> lives on the
+    Table child. Search by content rather than trusting the outer node.
+    """
+    candidates = [node, *_children(node)]
+    for candidate in candidates:
+        html = _html(candidate)
+        if html and BeautifulSoup(html, "lxml").find("tr") is not None:
+            return html
+    # Nested one level deeper (TableGroup -> Table -> ...) as a last resort.
+    for child in _children(node):
+        for grandchild in _children(child):
+            html = _html(grandchild)
+            if html and BeautifulSoup(html, "lxml").find("tr") is not None:
+                return html
+    return ""
+
+
 def _parse_table_html(html: str) -> tuple[list[list[Cell]], int, bool]:
     """Parse marker's table HTML, preserving rowspan/colspan.
 
@@ -134,6 +155,10 @@ def _parse_table_html(html: str) -> tuple[list[list[Cell]], int, bool]:
     while marker emits plain cell text.
     """
     soup = BeautifulSoup(html, "lxml")
+    # marker points at sibling blocks with <content-ref> placeholders; they
+    # carry no text and would otherwise pollute cell contents.
+    for ref in soup.find_all("content-ref"):
+        ref.decompose()
     table_tag = soup.find("table") or soup
     rows: list[list[Cell]] = []
     for tr in table_tag.find_all("tr"):
@@ -234,14 +259,9 @@ class _MarkerAdapter:
 
     def _table(self, node: dict[str, Any], caption: str, label: str | None) -> None:
         self.source_counts["tables"] += 1
-        html = _html(node)
+        html = _table_html(node)
         if not html:
-            for child in _children(node):
-                if _block_type(child) in TABLE_TYPES:
-                    html = _html(child)
-                    break
-        if not html:
-            self.unmapped.append({"kind": "tables", "id": _node_id(node), "error": "no table html"})
+            self.unmapped.append({"kind": "tables", "id": _node_id(node), "error": "no table markup"})
             return
         rows, header_rows, has_spans = _parse_table_html(html)
         table = Table(
