@@ -56,10 +56,9 @@ def _add_common_io_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_extraction_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--extractor", choices=["auto", "arxiv_html", "marker", "pymupdf"], default="auto")
+    parser.add_argument("--extractor", choices=["auto", "arxiv_html", "marker"], default="auto")
     parser.add_argument("--marker-venv", type=Path, default=DEFAULT_MARKER_VENV)
     parser.add_argument("--no-install-marker", action="store_true")
-    parser.add_argument("--prefer-pymupdf", action="store_true")
     parser.add_argument("--min-coverage", type=float, default=0.95)
     parser.add_argument("--allow-incomplete", action="store_true")
     parser.add_argument("--no-figures", action="store_true")
@@ -214,7 +213,6 @@ def _to_fetch_options(args: argparse.Namespace) -> FetchOptions:
         if getattr(args, "marker_venv", None)
         else None,
         install_marker=not getattr(args, "no_install_marker", False),
-        prefer_pymupdf=getattr(args, "prefer_pymupdf", False),
         pdf_path=getattr(args, "pdf", None),
     )
 

@@ -51,7 +51,7 @@ class FetchOptions:
     min_md_lines: int = 8
     allow_low_quality_md: bool = False
     verbose: bool = False
-    extractor: str = "auto"  # auto | arxiv_html | marker | pymupdf
+    extractor: str = "auto"  # auto | arxiv_html | marker
     min_coverage: float = 0.95
     allow_incomplete: bool = False
     download_figures: bool = True
@@ -59,7 +59,6 @@ class FetchOptions:
     max_asset_bytes: int = 25 * 1024 * 1024
     marker_venv: Path | None = None
     install_marker: bool = True
-    prefer_pymupdf: bool = False
     pdf_path: Path | None = None
 
 

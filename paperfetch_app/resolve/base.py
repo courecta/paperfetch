@@ -15,7 +15,7 @@ STATUS_UNAVAILABLE = "unavailable"
 class SourceCandidate:
     kind: str  # arxiv_html | pdf | html | jats
     url: str
-    extractor: str  # arxiv_html | marker | pymupdf | html_generic
+    extractor: str  # arxiv_html | marker | html_generic
     priority: int = 0
     label: str = ""
 

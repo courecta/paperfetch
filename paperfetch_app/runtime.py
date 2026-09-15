@@ -19,7 +19,6 @@ def default_fetch_options(
     verbose: bool = False,
     marker_venv: Path | None = None,
     install_marker: bool = True,
-    prefer_pymupdf: bool = False,
     out_dir: Path | None = None,
     project_files: str = "none",
     workers: int = 4,
@@ -53,7 +52,6 @@ def default_fetch_options(
         max_asset_bytes=25 * 1024 * 1024,
         marker_venv=(marker_venv or get_default_marker_venv()).expanduser().resolve(),
         install_marker=install_marker,
-        prefer_pymupdf=prefer_pymupdf,
     )
     values.update(overrides)
     return FetchOptions(**values)

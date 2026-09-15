@@ -1,27 +1,45 @@
+"""Render PDF pages and float crops as visual ground truth.
+
+Crops come from the layout model's own bounding boxes. The previous approach
+searched the page for the caption text and then guessed a region roughly half a
+page tall around it, which mislocated floats whenever a label appeared twice or
+a figure did not sit where the heuristic assumed. marker reports bboxes in PDF
+points, so the exact region is already known.
+"""
+
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
+
+import pypdfium2 as pdfium
 
 from .bundle import BundlePaths
 from .extract.ir import Document
 from .io_utils import ensure_dir, safe_slug, write_json_atomic
 
 
-def _import_fitz() -> Any | None:
-    try:
-        import pymupdf as fitz  # type: ignore
-
-        return fitz
-    except Exception:
-        pass
-    try:
-        import fitz  # type: ignore
-
-        return fitz
-    except Exception:
+def _crop_margins(bbox: list[float], width: float, height: float) -> tuple[float, float, float, float] | None:
+    """Convert a top-left-origin bbox into pypdfium2 (left, bottom, right, top) margins."""
+    x0, y0, x1, y1 = bbox
+    left, right = max(0.0, min(x0, x1)), min(width, max(x0, x1))
+    top, bottom = max(0.0, min(y0, y1)), min(height, max(y0, y1))
+    if right - left < 1.0 or bottom - top < 1.0:
         return None
+    return (left, height - bottom, width - right, top)
+
+
+def _float_targets(document: Document) -> list[tuple[str, str, list[float], int]]:
+    targets: list[tuple[str, str, list[float], int]] = []
+    for block in document.blocks:
+        if block.kind not in {"figure", "table"}:
+            continue
+        bbox = block.meta.get("bbox")
+        page = block.meta.get("page")
+        if not isinstance(bbox, list) or len(bbox) != 4 or not isinstance(page, int):
+            continue
+        targets.append((block.id, block.kind, [float(v) for v in bbox], page))
+    return targets
 
 
 def render_pdf_visuals(
@@ -32,91 +50,55 @@ def render_pdf_visuals(
     page_dpi: int = 120,
     crop_dpi: int = 180,
 ) -> dict[str, Any]:
-    """Render full PDF pages plus approximate float crops as visual ground truth."""
-    fitz = _import_fitz()
-    if fitz is None:
-        return {"available": False, "reason": "PyMuPDF not installed"}
     if not pdf_path.exists():
         return {"available": False, "reason": "PDF missing"}
+
+    try:
+        pdf = pdfium.PdfDocument(str(pdf_path))
+    except Exception as exc:
+        return {"available": False, "reason": f"cannot open PDF: {exc}"}
 
     ensure_dir(paths.pages_dir)
     ensure_dir(paths.crops_dir)
 
-    try:
-        doc = fitz.open(str(pdf_path))
-    except Exception as exc:  # pragma: no cover - corrupt pdf handling
-        return {"available": False, "reason": f"cannot open PDF: {exc}"}
-
     report: dict[str, Any] = {
         "available": True,
-        "page_count": doc.page_count,
+        "page_count": len(pdf),
         "pages": [],
         "crops": [],
         "float_pages": {},
     }
+
     try:
-        zoom = page_dpi / 72.0
-        matrix = fitz.Matrix(zoom, zoom)
-        for page_index in range(doc.page_count):
-            page = doc.load_page(page_index)
-            pix = page.get_pixmap(matrix=matrix, alpha=False)
+        for page_index in range(len(pdf)):
+            page = pdf[page_index]
+            image = page.render(scale=page_dpi / 72.0).to_pil()
             page_path = paths.pages_dir / f"page-{page_index + 1:03d}.png"
-            pix.save(str(page_path))
+            image.save(page_path)
             report["pages"].append(f"pages/{page_path.name}")
 
-        targets: list[tuple[str, str, str]] = []
-        for block in document.blocks:
-            if block.kind == "figure" and block.figure is not None and block.figure.label:
-                targets.append((block.id or block.figure.id, block.figure.label, "figure"))
-            elif block.kind == "table" and block.table is not None and block.table.label:
-                targets.append((block.id or block.table.id, block.table.label, "table"))
-
-        crop_matrix = fitz.Matrix(crop_dpi / 72.0, crop_dpi / 72.0)
-        for element_id, label, kind in targets:
-            needle = re.sub(r"\s+", " ", str(label)).strip().rstrip(":")
-            found = _find_label(doc, needle)
-            if found is None:
+        for element_id, kind, bbox, page_index in _float_targets(document):
+            if not 0 <= page_index < len(pdf):
                 continue
-            page_index, rect = found
+            page = pdf[page_index]
+            width, height = page.get_size()
+            margins = _crop_margins(bbox, width, height)
+            if margins is None:
+                continue
             report["float_pages"][element_id] = page_index + 1
-            page = doc.load_page(page_index)
-            crop_rect = _crop_rect(page.rect, rect, kind)
-            pix = page.get_pixmap(matrix=crop_matrix, clip=crop_rect, alpha=False)
+            image = page.render(scale=crop_dpi / 72.0, crop=margins).to_pil()
             crop_name = f"{safe_slug(element_id, max_length=50)}.png"
-            crop_path = paths.crops_dir / crop_name
-            pix.save(str(crop_path))
-            report["crops"].append({"id": element_id, "label": needle, "kind": kind, "page": page_index + 1, "path": f"crops/{crop_name}"})
+            image.save(paths.crops_dir / crop_name)
+            report["crops"].append(
+                {
+                    "id": element_id,
+                    "kind": kind,
+                    "page": page_index + 1,
+                    "path": f"crops/{crop_name}",
+                }
+            )
     finally:
-        doc.close()
+        pdf.close()
 
     write_json_atomic(paths.crops_dir / "manifest.json", report)
     return report
-
-
-def _find_label(doc: Any, needle: str) -> tuple[int, Any] | None:
-    if not needle:
-        return None
-    for page_index in range(doc.page_count):
-        page = doc.load_page(page_index)
-        hits = page.search_for(needle)
-        if hits:
-            return page_index, hits[0]
-    return None
-
-
-def _crop_rect(page_rect: Any, caption_rect: Any, kind: str) -> Any:
-    height = page_rect.height
-    margin = 0.04 * height
-    span = 0.55 * height
-    if kind == "table":
-        top = max(page_rect.y0, caption_rect.y0 - margin)
-        bottom = min(page_rect.y1, caption_rect.y1 + span)
-    else:
-        top = max(page_rect.y0, caption_rect.y0 - span)
-        bottom = min(page_rect.y1, caption_rect.y1 + margin)
-    return _rect(page_rect.x0, top, page_rect.x1, bottom)
-
-
-def _rect(x0: float, y0: float, x1: float, y1: float) -> Any:
-    fitz = _import_fitz()
-    return fitz.Rect(x0, y0, x1, y1)

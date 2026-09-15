@@ -81,6 +81,38 @@ def _inlines(text: str) -> list[Inline]:
     return [Inline(kind="text", text=text)] if text else []
 
 
+def _geometry(node: dict[str, Any]) -> dict[str, Any]:
+    """Capture marker's page-space bbox so floats can be cropped exactly.
+
+    marker reports bboxes in PDF points with a top-left origin (its Page bbox
+    matches the page's point size), so they can be handed straight to a
+    renderer instead of guessing a region from where the caption text sits.
+    """
+    meta: dict[str, Any] = {}
+    bbox = node.get("bbox")
+    if isinstance(bbox, list) and len(bbox) == 4:
+        try:
+            meta["bbox"] = [float(v) for v in bbox]
+        except (TypeError, ValueError):
+            pass
+    page = _page_index(_node_id(node))
+    if page is not None:
+        meta["page"] = page
+    return meta
+
+
+def _page_index(node_id: str) -> int | None:
+    """marker ids look like /page/12/Figure/3."""
+    parts = node_id.split("/")
+    for index, part in enumerate(parts):
+        if part == "page" and index + 1 < len(parts):
+            try:
+                return int(parts[index + 1])
+            except ValueError:
+                return None
+    return None
+
+
 def _anchor(node: dict[str, Any]) -> SourceAnchor:
     return SourceAnchor(element_id=_node_id(node) or None, tag=_block_type(node).lower() or None)
 
@@ -255,7 +287,9 @@ class _MarkerAdapter:
             anchor=_anchor(node),
         )
         self.mapped_counts["figures"] += 1
-        self.blocks.append(Block(kind="figure", id=figure.id, figure=figure, anchor=figure.anchor))
+        self.blocks.append(
+            Block(kind="figure", id=figure.id, figure=figure, anchor=figure.anchor, meta=_geometry(node))
+        )
 
     def _table(self, node: dict[str, Any], caption: str, label: str | None) -> None:
         self.source_counts["tables"] += 1
@@ -275,7 +309,9 @@ class _MarkerAdapter:
             anchor=_anchor(node),
         )
         self.mapped_counts["tables"] += 1
-        self.blocks.append(Block(kind="table", id=table.id, table=table, anchor=table.anchor))
+        self.blocks.append(
+            Block(kind="table", id=table.id, table=table, anchor=table.anchor, meta=_geometry(node))
+        )
 
     @staticmethod
     def _caption_for(node: dict[str, Any]) -> tuple[str, str | None]:

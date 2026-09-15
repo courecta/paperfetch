@@ -47,28 +47,39 @@ def _interpreter_version(executable: str) -> tuple[int, int] | None:
     return (major, minor)
 
 
-def _install_command(marker_venv: Path, venv_bin: Path) -> list[str]:
-    """Install marker with uv when available, falling back to pip.
+def require_uv() -> str:
+    """Locate uv, which is the only supported installer for the marker venv.
 
     marker pulls torch and its CUDA stack -- gigabytes of wheels. pip fetches
-    them one stream at a time from PyPI, which can look indistinguishable from
-    a hang; uv downloads in parallel and reuses a shared wheel cache, turning
-    the same install from hours into under a minute. --only-binary (pip) and
-    --no-build (uv) both fail fast on a missing wheel rather than attempting a
-    source build that dies on absent system headers.
+    them one stream at a time from PyPI, slowly enough to be indistinguishable
+    from a hang, and resolves a different (often source-only) dependency set.
+    uv downloads in parallel against a shared cache and is reproducible, so it
+    is a hard requirement rather than a preferred path.
     """
     uv = shutil.which("uv")
-    if uv:
-        return [
-            uv,
-            "pip",
-            "install",
-            "--python",
-            str(venv_bin / "python"),
-            "--no-build",
-            MARKER_REQUIREMENT,
-        ]
-    return [str(venv_bin / "pip"), "install", "--only-binary=:all:", MARKER_REQUIREMENT, "--quiet"]
+    if uv is None:
+        raise MarkerUnavailableError(
+            "uv is required to install marker",
+            hint=(
+                "Install it with 'curl -LsSf https://astral.sh/uv/install.sh | sh' "
+                "or see https://docs.astral.sh/uv/getting-started/installation/"
+            ),
+        )
+    return uv
+
+
+def _install_command(venv_bin: Path) -> list[str]:
+    # --no-build fails fast on a missing wheel rather than attempting a source
+    # build that dies on absent system headers.
+    return [
+        require_uv(),
+        "pip",
+        "install",
+        "--python",
+        str(venv_bin / "python"),
+        "--no-build",
+        MARKER_REQUIREMENT,
+    ]
 
 
 def _select_interpreter(verbose: bool) -> str | None:
@@ -133,10 +144,7 @@ def ensure_marker_command(marker_venv: Path, allow_install: bool, verbose: bool)
         raise MarkerUnavailableError(
             f"no interpreter in range python{MARKER_PYTHON_MIN[0]}.{MARKER_PYTHON_MIN[1]}"
             f"-{MARKER_PYTHON_MAX[0]}.{MARKER_PYTHON_MAX[1]} is available to install marker",
-            hint=(
-                f"Install one (for example python3.{MARKER_PYTHON_MAX[1]}), or pass --prefer-pymupdf "
-                "to accept degraded extraction with no structured IR."
-            ),
+            hint=f"Install one, for example 'uv python install {MARKER_PYTHON_MAX[0]}.{MARKER_PYTHON_MAX[1]}'.",
         )
 
     ensure_dir(marker_venv.parent)
@@ -149,7 +157,7 @@ def ensure_marker_command(marker_venv: Path, allow_install: bool, verbose: bool)
             text=True,
         )
         subprocess.run(
-            _install_command(marker_venv, venv_bin),
+            _install_command(venv_bin),
             check=True,
             capture_output=not verbose,
             text=True,

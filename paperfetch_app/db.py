@@ -421,7 +421,7 @@ def _index_document(conn: sqlite3.Connection, key: str, document: dict[str, Any]
 
 
 def _index_markdown(conn: sqlite3.Connection, key: str, markdown: str) -> None:
-    """Fallback indexing for marker/pymupdf output without an IR document."""
+    """Fallback indexing for output without an IR document."""
     lines = markdown.splitlines()
     current_id: str | None = None
     buffer: list[str] = []

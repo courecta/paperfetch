@@ -21,7 +21,7 @@ from .extract.html_arxiv import extract_arxiv_document
 from .extract.ir import Document
 from .extract.marker_ir import document_from_marker_json
 from .extract.render_markdown import render_markdown
-from .extract.render_text import render_text, strip_markdown
+from .extract.render_text import render_text
 from .fetch.http import HttpClient
 from .identity import build_identity
 from .io_utils import ensure_dir, now_utc_iso, safe_slug, write_json_atomic
@@ -30,7 +30,6 @@ from .marker_backend import ensure_marker_command, extract_with_marker
 from .metadata import fetch_arxiv_metadata
 from .models import FetchOptions, PaperInput, ProcessResult
 from .pdf_visual import render_pdf_visuals
-from .pymupdf_backend import extract_with_pymupdf, pymupdf_available
 from .resolve.base import STATUS_UNAVAILABLE, Resolution, SourceCandidate, resolve
 from .storage import materialize
 
@@ -142,95 +141,53 @@ def _extract_pdf_document(
     key: str,
     marker_cmd: str | None,
     metadata: dict[str, Any],
-) -> tuple[Document, str, str, dict[str, Any]]:
-    """Run marker (preferred) or PyMuPDF and return (document, markdown, source_kind, assets)."""
-    if options.extractor == "pymupdf" or options.prefer_pymupdf:
-        marker_cmd = None
-    else:
-        marker_cmd = marker_cmd or ensure_marker_command(
-            (options.marker_venv or get_default_marker_venv()).expanduser().resolve(),
-            options.install_marker,
-            options.verbose,
-        )
-        if options.extractor == "marker" and marker_cmd is None:
-            raise MarkerUnavailableError(
-                "marker is not installed and could not be installed",
-                hint="Install marker-pdf, allow auto-install, or pass --prefer-pymupdf.",
-            )
+) -> tuple[Document, str | None, str, dict[str, Any]]:
+    """Run marker and return (document, markdown, source_kind, assets).
 
-    use_pymupdf = options.extractor == "pymupdf" or options.prefer_pymupdf or marker_cmd is None
-    last_error: Exception | None = None
-
-    if not use_pymupdf:
-        try:
-            work_dir = staging.root / "converted"
-            result = extract_with_marker(
-                marker_cmd=marker_cmd,
-                pdf_path=staging.pdf,
-                work_dir=work_dir,
-                timeout_sec=options.marker_timeout,
-                retries=options.marker_retries,
-                backoff_seconds=options.marker_backoff,
-                verbose=options.verbose,
-                output_format="json",
-            )
-            if result.json_path is None:
-                raise ExtractionError("marker produced no JSON output")
-            payload = json.loads(result.json_path.read_text(encoding="utf-8", errors="replace"))
-            document = document_from_marker_json(
-                payload,
-                key=key,
-                source_url=resolution.identity.normalized_url or "",
-                figures_dir=staging.figures_dir,
-                title=str(metadata.get("title") or ""),
-            )
-            # markdown_text is None so the caller renders it from the IR, the
-            # same path the arXiv HTML extractor takes.
-            return document, None, "marker", document.coverage.get("assets", {})
-        except Exception as exc:
-            last_error = exc
-            if options.extractor == "marker":
-                raise ExtractionError(f"marker extraction failed: {exc}") from exc
-
-    if not pymupdf_available():
-        if last_error is not None:
-            raise ExtractionError(
-                f"PDF extraction failed with marker ({last_error}) and PyMuPDF is not installed"
-            ) from last_error
+    marker is the only PDF extractor. A text-extraction library with no layout
+    model cannot produce sections, captions or tables, so there is no degraded
+    fallback to stand in for it -- failing loudly is the point.
+    """
+    marker_cmd = marker_cmd or ensure_marker_command(
+        (options.marker_venv or get_default_marker_venv()).expanduser().resolve(),
+        options.install_marker,
+        options.verbose,
+    )
+    if marker_cmd is None:
         raise MarkerUnavailableError(
-            "No PDF extractor available",
-            hint="Install marker-pdf or pymupdf, or use --extractor marker.",
+            "marker is not installed and auto-install is disabled",
+            hint="Drop --no-install-marker, or install marker-pdf into the marker venv yourself.",
         )
 
     try:
-        work_dir = staging.root / "converted-pymupdf"
-        result = extract_with_pymupdf(staging.pdf, work_dir)
-        markdown_text = result.markdown_path.read_text(encoding="utf-8", errors="replace")
-        markdown_text, asset_report = assets_module.ingest_marker_output(
-            markdown_text, result.output_dir, staging
+        work_dir = staging.root / "converted"
+        result = extract_with_marker(
+            marker_cmd=marker_cmd,
+            pdf_path=staging.pdf,
+            work_dir=work_dir,
+            timeout_sec=options.marker_timeout,
+            retries=options.marker_retries,
+            backoff_seconds=options.marker_backoff,
+            verbose=options.verbose,
+            output_format="json",
         )
-        document = _pdf_shell_document(key, resolution, metadata, "pymupdf")
-        document.coverage["assets"] = asset_report.to_dict()
-        return document, markdown_text, "pymupdf", asset_report.to_dict()
+        if result.json_path is None:
+            raise ExtractionError("marker produced no JSON output")
+        payload = json.loads(result.json_path.read_text(encoding="utf-8", errors="replace"))
+        document = document_from_marker_json(
+            payload,
+            key=key,
+            source_url=resolution.identity.normalized_url or "",
+            figures_dir=staging.figures_dir,
+            title=str(metadata.get("title") or ""),
+        )
+        # markdown_text is None so the caller renders it from the IR, the same
+        # path the arXiv HTML extractor takes.
+        return document, None, "marker", document.coverage.get("assets", {})
+    except PaperfetchError:
+        raise
     except Exception as exc:
-        raise ExtractionError(f"PyMuPDF extraction failed: {exc}") from exc
-
-
-def _pdf_shell_document(
-    key: str,
-    resolution: Resolution,
-    metadata: dict[str, Any],
-    source_kind: str,
-) -> Document:
-    document = Document(
-        schema_version=1,
-        key=key,
-        source_kind=source_kind,
-        source_url=resolution.landing_url or resolution.identity.normalized_url,
-        title=str(metadata.get("title") or ""),
-    )
-    document.coverage["ir_available"] = False
-    return document
+        raise ExtractionError(f"marker extraction failed: {exc}") from exc
 
 
 def _apply_visuals(document: Document, report: dict[str, Any]) -> None:
@@ -458,10 +415,7 @@ def process_one(
 
                 if markdown_text is None:
                     markdown_text = render_markdown(document, metadata=metadata)
-                if used_extractor == "pymupdf":
-                    text_output = strip_markdown(markdown_text)
-                else:
-                    text_output = render_text(document, metadata=metadata)
+                text_output = render_text(document, metadata=metadata)
 
                 _write_text(staging.markdown, markdown_text)
                 _write_text(staging.text, text_output)
@@ -614,7 +568,6 @@ def reextract_keys(
         max_asset_bytes=options.max_asset_bytes,
         marker_venv=options.marker_venv,
         install_marker=options.install_marker,
-        prefer_pymupdf=options.prefer_pymupdf,
         pdf_path=options.pdf_path,
     )
     return run_fetch(tasks, reextract_options, marker_cmd, index_snapshot)

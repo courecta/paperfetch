@@ -40,7 +40,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "urls": {"type": "array", "items": {"type": "string"}, "description": "Paper URLs or identifiers"},
-                "extractor": {"type": "string", "enum": ["auto", "arxiv_html", "marker", "pymupdf"], "default": "auto"},
+                "extractor": {"type": "string", "enum": ["auto", "arxiv_html", "marker"], "default": "auto"},
                 "force_download": {"type": "boolean", "default": False},
                 "refresh_md": {"type": "boolean", "default": False},
             },
