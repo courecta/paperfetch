@@ -18,8 +18,9 @@ an agent can always fall back to the original rendering.
 - **arXiv HTML (LaTeXML)** parsed into a typed IR: sections, paragraphs,
   inline/display LaTeX, tables with rowspan/colspan, figures with all panels,
   footnotes, citations, bibliography, algorithms/listings.
-- **Marker** (high quality, isolated venv, lazily installed) with **PyMuPDF**
-  as a fast CPU fallback for any PDF.
+- **Marker** for any PDF: a layout model over the PDF's own text layer, mapped
+  into the same IR, so figures keep their captions, tables keep their spans,
+  and equations stay LaTeX. Installed lazily into an isolated venv.
 - **Universal resolvers**: arXiv, DOI (Crossref + OpenAlex + Unpaywall +
   Semantic Scholar), OpenReview, PubMed Central, bioRxiv/medRxiv, ACL, PMLR,
   CVF, JMLR, NeurIPS, plus generic Highwire/JSON-LD landing pages.
@@ -27,18 +28,37 @@ an agent can always fall back to the original rendering.
   tables, bibliography, notes) are not accounted for in the IR, unless
   `--allow-incomplete` is passed. The raw source and PDF are always retained.
 
+## Requirements
+
+paperfetch trades install weight for extraction fidelity. Before installing:
+
+| | |
+|---|---|
+| **uv** | Required. It is the only supported installer for the Marker environment — [install it](https://docs.astral.sh/uv/getting-started/installation/). |
+| **An NVIDIA GPU** | Strongly recommended. Marker runs on CPU but takes ~15s/page instead of ~1s. |
+| **~3 GB disk** | Marker's isolated venv plus its model weights. |
+| **Python 3.10–3.13** | For the Marker venv specifically. paperfetch itself runs on 3.10+. |
+
+There is no lightweight extraction fallback, by design. A text-extraction
+library with no layout model cannot produce sections, captions or tables, so
+rather than silently returning a structureless dump, paperfetch fails and says
+why.
+
 ## Install
 
 ```bash
 pip install paperfetch-tool
 pip install "paperfetch-tool[serve]"   # HTTP API
 pip install "paperfetch-tool[mcp]"     # official MCP SDK server
-pip install "paperfetch-tool[pdf]"     # PyMuPDF fallback extraction
 ```
 
-Marker is not a Python dependency: paperfetch installs it lazily into an
+Marker is not a Python dependency: paperfetch installs it with `uv` into an
 isolated venv under `$PAPERFETCH_CACHE/marker_venv` the first time a PDF needs
-it (or use `--no-install-marker` / `--prefer-pymupdf`).
+it, so the multi-gigabyte torch stack never enters your project environment.
+Pass `--no-install-marker` to manage that venv yourself.
+
+The first PDF also downloads Marker's model weights (~2 GB), so expect the
+first run to be slow and later runs not to be.
 
 ## Quick start
 
@@ -80,6 +100,10 @@ library/<key>/
 `library/index.json` is kept as a portable metadata export; the queryable index
 lives in `library.sqlite3` (WAL + FTS5).
 
+`crops/` is cut from the layout model's own bounding boxes, so it is populated
+for papers extracted via Marker. arXiv HTML papers carry their real figure
+images from source instead, and get `pages/` but no crops.
+
 ## Commands
 
 | Command | Purpose |
@@ -98,7 +122,7 @@ lives in `library.sqlite3` (WAL + FTS5).
 Useful flags:
 
 ```bash
-paperfetch fetch --url <url> --extractor auto|arxiv_html|marker|pymupdf
+paperfetch fetch --url <url> --extractor auto|arxiv_html|marker
 paperfetch fetch --url <url> --pdf ./authorized-copy.pdf   # skip downloading
 paperfetch fetch --url <url> --min-coverage 0.95 --allow-incomplete
 paperfetch fetch --url <url> --no-figures --no-pdf-visual
@@ -184,9 +208,21 @@ downloads, robots checks for landing pages, and PDF magic-byte validation.
 ```bash
 uv sync --group dev
 uv run pytest -m "not network"     # fast, hermetic
-uv run pytest -m network           # live arXiv/S2 smoke tests
 uv run ruff check paperfetch_app tests
 ```
+
+The unit suite covers routing, identity and error handling. It cannot see
+whether a table came out with rows in it, so extraction *quality* is measured
+against real papers instead:
+
+```bash
+uv run python scripts/validate.py            # diff against the recorded baseline
+uv run python scripts/validate.py --update   # re-record after an intended change
+```
+
+That needs network, a GPU and the Marker venv, so it is a manual/nightly step
+rather than part of CI. Every extraction bug found so far passed a fully green
+unit run and was visible only here.
 
 ## License and responsible use
 
