@@ -69,6 +69,20 @@
     "table_rows": 59,
     "tables": 7
   },
+  "Mistral 7B": {
+    "blocks": 97,
+    "captioned_figures": 4,
+    "coverage_ok": true,
+    "crops": 14,
+    "equations": 0,
+    "extractor": "marker",
+    "figures": 8,
+    "headings": 16,
+    "ir_available": true,
+    "pages": 9,
+    "table_rows": 34,
+    "tables": 6
+  },
   "Quantifying Organismal Complexity using a Population Genetic Approach": {
     "blocks": 168,
     "captioned_figures": 3,
