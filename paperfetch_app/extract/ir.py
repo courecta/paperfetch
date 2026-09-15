@@ -254,6 +254,15 @@ class Document:
             sections[-1]["end"] = len(self.blocks)
         return sections
 
+    def content_chars(self) -> int:
+        """Total plain-text length of the body, used to detect empty extractions."""
+        total = 0
+        for block in self.blocks:
+            total += len(block.text) + len(block.tex) + len(_plain_text(block.inlines))
+            for item in block.items:
+                total += len(item.text) + len(_plain_text(item.inlines))
+        return total
+
 
 def _plain_text(inlines: list[Inline]) -> str:
     parts: list[str] = []

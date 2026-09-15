@@ -411,9 +411,13 @@ def process_one(
                         asset_report = figure_report.to_dict()
                     coverage_report = audit(document, min_ratio=options.min_coverage)
 
-                    if not coverage_report["ok"] and options.extractor == "auto":
+                    # Only fall back when the HTML extraction produced nothing
+                    # usable. A partially-covered IR still carries sections,
+                    # captions and tables, so trading it for a PDF re-extraction
+                    # loses more than it recovers.
+                    if not coverage_report["ok"] and options.extractor == "auto" and coverage_report["empty"]:
                         resolution.notes.append(
-                            f"HTML coverage {coverage_report['ratio']} below threshold; falling back to PDF"
+                            f"arXiv HTML unusable ({coverage_report.get('reason')}); falling back to PDF"
                         )
                         try:
                             if not staging.pdf.exists():
@@ -425,13 +429,17 @@ def process_one(
                         except Exception as exc:
                             resolution.notes.append(f"PDF fallback failed: {exc}")
 
-                    if not coverage_report["ok"] and not options.allow_incomplete:
-                        raise CoverageError(
-                            f"Coverage {coverage_report['ratio']} below {options.min_coverage}",
-                            report=coverage_report,
-                        )
                 else:
                     coverage_report = audit(document, min_ratio=options.min_coverage)
+
+                # The gate applies to every path, not just arXiv HTML: a PDF
+                # extraction that yields no structured IR cannot make a
+                # fidelity claim either.
+                if not coverage_report["ok"] and not options.allow_incomplete:
+                    raise CoverageError(
+                        coverage_report.get("reason") or f"coverage below {options.min_coverage}",
+                        report=coverage_report,
+                    )
 
                 visual_report: dict[str, Any] = {"available": False, "reason": "disabled"}
                 if options.pdf_visual and staging.pdf.exists():

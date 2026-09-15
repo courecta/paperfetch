@@ -46,7 +46,28 @@ def _options(library: Path, pdf_path: Path, out_dir: Path | None = None) -> Fetc
         prefer_pymupdf=True,
         pdf_visual=False,
         pdf_path=pdf_path,
+        # PyMuPDF yields no structured IR, so it cannot satisfy the coverage
+        # gate on its own. Callers must opt into the degraded result.
+        allow_incomplete=True,
     )
+
+
+def test_pymupdf_cannot_claim_coverage(tmp_path: Path):
+    """PyMuPDF has no layout model, so it must never report a coverage ratio."""
+    pdf_path = tmp_path / "local.pdf"
+    _make_pdf(pdf_path)
+    library = tmp_path / "lib"
+    paper = PaperInput(slug="local-paper", title="Local Test Paper", url="https://example.com/local.pdf", source="test")
+
+    strict = FetchOptions(**{**_options(library, pdf_path).__dict__, "allow_incomplete": False})
+    result = process_one(paper, strict, None, {})
+    assert not result.success
+    assert "no structured IR" in (result.error or "")
+
+    degraded = process_one(paper, _options(library, pdf_path), None, {})
+    assert degraded.success
+    assert degraded.coverage["ratio"] is None
+    assert degraded.coverage["ir_available"] is False
 
 
 def test_local_pdf_pipeline_bundle(tmp_path: Path):

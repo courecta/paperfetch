@@ -280,7 +280,12 @@ def _run_fetch(args: argparse.Namespace) -> int:
                 title = result.paper.title or (result.index_entry or {}).get("title") or result.paper.url
                 coverage = result.coverage or {}
                 ratio = coverage.get("ratio")
-                suffix = f" coverage={ratio}" if ratio is not None else ""
+                if ratio is not None:
+                    suffix = f" coverage={ratio}"
+                elif coverage.get("ir_available") is False:
+                    suffix = " coverage=n/a (no structured IR)"
+                else:
+                    suffix = ""
                 print(f"[ok] {title}{suffix}")
                 if result.index_entry is not None:
                     updates[result.key] = result.index_entry
