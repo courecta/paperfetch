@@ -38,6 +38,8 @@ COMMANDS = {
     "clean",
     "export",
     "discover",
+    "citations",
+    "zotero",
     "serve",
     "mcp",
     "migrate",
@@ -150,6 +152,40 @@ def _build_parser() -> argparse.ArgumentParser:
     discover_cmd.add_argument("--format", choices=["urls", "tsv", "json", "manifest"], default="urls")
     discover_cmd.add_argument("-o", "--output", type=Path)
 
+    cite_cmd = subparsers.add_parser("citations", help="Walk the citation graph around papers in the library.")
+    cite_cmd.add_argument("--library-dir", type=Path, default=DEFAULT_LIBRARY_DIR)
+    cite_cmd.add_argument("--key", action="append", default=[])
+    cite_cmd.add_argument("--url", action="append", default=[])
+    cite_cmd.add_argument("--all", action="store_true", help="Every paper in the library")
+    cite_cmd.add_argument(
+        "--direction",
+        choices=["references", "citations"],
+        default="references",
+        help="Papers the seeds cite, or papers citing them",
+    )
+    cite_cmd.add_argument("--limit", type=int, default=50, help="Neighbours per seed paper")
+    cite_cmd.add_argument("--open-access", action="store_true")
+    cite_cmd.add_argument("--min-citations", type=int, default=0)
+    cite_cmd.add_argument(
+        "--min-seeds",
+        type=int,
+        default=1,
+        help="Only keep neighbours reached from at least this many seeds",
+    )
+    cite_cmd.add_argument("--format", choices=["urls", "tsv", "json", "manifest"], default="tsv")
+    cite_cmd.add_argument("-o", "--output", type=Path)
+
+    zot_cmd = subparsers.add_parser("zotero", help="Read a Zotero library as a list of papers to fetch.")
+    zot_cmd.add_argument("--collection", help="Only items in this collection (by name)")
+    zot_cmd.add_argument("--tag", help="Only items carrying this tag")
+    zot_cmd.add_argument("--limit", type=int)
+    zot_cmd.add_argument("--library-id", default="0")
+    zot_cmd.add_argument("--library-type", choices=["user", "group"], default="user")
+    zot_cmd.add_argument("--web", action="store_true", help="Use the Zotero web API instead of the local one")
+    zot_cmd.add_argument("--api-key", help="Required with --web")
+    zot_cmd.add_argument("--format", choices=["urls", "tsv", "json", "manifest"], default="manifest")
+    zot_cmd.add_argument("-o", "--output", type=Path)
+
     serve_cmd = subparsers.add_parser("serve", help="Start HTTP API server.")
     serve_cmd.add_argument("--host", default="127.0.0.1")
     serve_cmd.add_argument("--port", type=int, default=8765)
@@ -164,8 +200,8 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate_cmd.add_argument("--library-dir", type=Path, default=DEFAULT_LIBRARY_DIR)
     migrate_cmd.add_argument("--delete-old", action="store_true")
 
-    install_cmd = subparsers.add_parser("install-mcp", help="Install the paperfetch MCP server into opencode.")
-    install_cmd.add_argument("--client", choices=["opencode"], default="opencode")
+    install_cmd = subparsers.add_parser("install-mcp", help="Register the paperfetch MCP server with an agent client.")
+    install_cmd.add_argument("--client", choices=["opencode", "claude-code", "claude-desktop"], default="claude-code")
     install_cmd.add_argument("--scope", choices=["project", "global"], default="project")
     install_cmd.add_argument("--project-dir", type=Path, default=Path.cwd())
     install_cmd.add_argument("--library-dir", type=Path, default=DEFAULT_LIBRARY_DIR)
@@ -488,10 +524,11 @@ def _run_migrate(args: argparse.Namespace) -> int:
 
 
 def _run_install_mcp(args: argparse.Namespace) -> int:
-    from .opencode import install_mcp
+    from .clients import install_mcp
 
     try:
         summary = install_mcp(
+            client=args.client,
             scope=args.scope,
             project_dir=args.project_dir,
             library_dir=args.library_dir,
@@ -503,7 +540,124 @@ def _run_install_mcp(args: argparse.Namespace) -> int:
         print(str(exc))
         return 1
     print(json.dumps(summary, indent=2))
-    print("Restart opencode for the new MCP server to load.")
+    print(f"Restart {args.client} for the new MCP server to load.")
+    return 0
+
+
+def _run_citations(args: argparse.Namespace) -> int:
+    from .citations import rank_by_frequency, related_papers
+    from .errors import PaperfetchError
+    from .fetch.http import HttpClient
+
+    library_dir = args.library_dir.expanduser().resolve()
+    index = load_index(index_path(library_dir))
+
+    seeds: list[tuple[str, str]] = []
+    if args.all:
+        seeds = [(key, entry.get("url") or entry.get("source_url") or "") for key, entry in index.items()]
+    else:
+        for key in args.key:
+            entry = index.get(key)
+            if entry is None:
+                print(f"Unknown key: {key}")
+                return 1
+            seeds.append((key, entry.get("url") or ""))
+        seeds.extend((build_identity(url).key, url) for url in args.url)
+
+    seeds = [(key, url) for key, url in seeds if url]
+    if not seeds:
+        print("No seed papers. Pass --key/--url, or --all for the whole library.")
+        return 1
+
+    groups: list[list] = []
+    failures = 0
+    client = HttpClient(timeout=30, retries=2, backoff=1.5)
+    try:
+        for _, url in seeds:
+            try:
+                groups.append(
+                    related_papers(
+                        build_identity(url),
+                        direction=args.direction,
+                        limit=args.limit,
+                        open_access_only=args.open_access,
+                        min_citations=args.min_citations,
+                        client=client,
+                    )
+                )
+            except PaperfetchError as exc:
+                failures += 1
+                print(f"skipped {url}: {exc}", file=sys.stderr)
+    finally:
+        client.close()
+
+    ranked = [(paper, count) for paper, count in rank_by_frequency(groups) if count >= args.min_seeds]
+    known = {entry.get("url") for entry in index.values()}
+    fresh = [paper for paper, _ in ranked if paper.url not in known]
+
+    print(
+        f"{len(seeds) - failures} seeds -> {len(ranked)} neighbours "
+        f"(>= {args.min_seeds} seed(s)), {len(fresh)} not already in the library",
+        file=sys.stderr,
+    )
+    if not fresh:
+        return 0
+
+    output = format_discovered(fresh, args.format)
+    if args.output:
+        ensure_dir(args.output.parent)
+        args.output.write_text(output, encoding="utf-8")
+        print(f"Wrote {args.output}")
+    else:
+        print(output)
+    return 0
+
+
+def _run_zotero(args: argparse.Namespace) -> int:
+    import csv
+    import io
+
+    from .zotero import read_library
+
+    papers, skipped = read_library(
+        library_id=args.library_id,
+        library_type=args.library_type,
+        api_key=args.api_key,
+        local=not args.web,
+        collection=args.collection,
+        tag=args.tag,
+        limit=args.limit,
+    )
+
+    for title, reason in skipped:
+        print(f"skipped {title[:70]}: {reason}", file=sys.stderr)
+    if not papers:
+        print("No fetchable items found.", file=sys.stderr)
+        return 0
+
+    if args.format == "urls":
+        output = "\n".join(p.url for p in papers)
+    elif args.format == "json":
+        output = json.dumps([p.__dict__ | {"slug": p.slug} for p in papers], indent=2)
+    else:
+        buffer = io.StringIO()
+        if args.format == "manifest":
+            writer = csv.DictWriter(buffer, fieldnames=["url", "title", "slug"])
+            writer.writeheader()
+            writer.writerows({"url": p.url, "title": p.title, "slug": p.slug} for p in papers)
+        else:
+            writer = csv.writer(buffer, delimiter="\t")
+            writer.writerow(["slug", "title", "url", "collections", "tags"])
+            for p in papers:
+                writer.writerow([p.slug, p.title, p.url, ";".join(p.collections), ";".join(p.tags)])
+        output = buffer.getvalue().rstrip("\n")
+
+    if args.output:
+        ensure_dir(args.output.parent)
+        args.output.write_text(output + "\n", encoding="utf-8")
+        print(f"{len(papers)} papers -> {args.output}", file=sys.stderr)
+    else:
+        print(output)
     return 0
 
 
@@ -549,6 +703,8 @@ def main(argv: list[str] | None = None) -> int:
         "clean": _run_clean,
         "export": _run_export,
         "discover": _run_discover,
+        "citations": _run_citations,
+        "zotero": _run_zotero,
         "serve": _run_serve,
         "mcp": _run_mcp,
         "migrate": _run_migrate,
@@ -558,7 +714,20 @@ def main(argv: list[str] | None = None) -> int:
     if handler is None:
         parser.error(f"Unknown command: {args.command}")
         return 2
-    return handler(args)
+
+    from .errors import PaperfetchError
+
+    try:
+        return handler(args)
+    except PaperfetchError as exc:
+        # These carry an actionable hint; a traceback buries it.
+        print(f"error: {exc}", file=sys.stderr)
+        if exc.hint:
+            print(f"hint: {exc.hint}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

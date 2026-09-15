@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -74,16 +75,47 @@ def _binary_command() -> list[str]:
     return [sys.executable, "-m", "paperfetch_app"]
 
 
-def _config_path(scope: str, project_dir: Path) -> Path:
-    if scope == "global":
-        return Path.home() / ".config" / "opencode" / "opencode.json"
-    return project_dir / "opencode.json"
+CLIENTS = ("opencode", "claude-code", "claude-desktop")
 
 
-def _skill_path(scope: str, project_dir: Path) -> Path:
-    if scope == "global":
-        return Path.home() / ".config" / "opencode" / "skills" / SKILL_NAME / "SKILL.md"
-    return project_dir / ".opencode" / "skills" / SKILL_NAME / "SKILL.md"
+def _desktop_config_dir() -> Path:
+    """Claude Desktop's config location is platform-specific."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Claude"
+    if sys.platform.startswith("win"):
+        base = os.environ.get("APPDATA")
+        return Path(base) / "Claude" if base else Path.home() / "AppData" / "Roaming" / "Claude"
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "Claude"
+
+
+def _config_path(client: str, scope: str, project_dir: Path) -> Path:
+    if client == "opencode":
+        if scope == "global":
+            return Path.home() / ".config" / "opencode" / "opencode.json"
+        return project_dir / "opencode.json"
+    if client == "claude-code":
+        # Project scope is .mcp.json, which is meant to be committed; global
+        # scope lives in the user-wide ~/.claude.json.
+        if scope == "global":
+            return Path.home() / ".claude.json"
+        return project_dir / ".mcp.json"
+    if client == "claude-desktop":
+        # Claude Desktop has no per-project config.
+        return _desktop_config_dir() / "claude_desktop_config.json"
+    raise ValueError(f"Unknown client: {client}")
+
+
+def _skill_path(client: str, scope: str, project_dir: Path) -> Path | None:
+    if client == "opencode":
+        if scope == "global":
+            return Path.home() / ".config" / "opencode" / "skills" / SKILL_NAME / "SKILL.md"
+        return project_dir / ".opencode" / "skills" / SKILL_NAME / "SKILL.md"
+    if client == "claude-code":
+        if scope == "global":
+            return Path.home() / ".claude" / "skills" / SKILL_NAME / "SKILL.md"
+        return project_dir / ".claude" / "skills" / SKILL_NAME / "SKILL.md"
+    # Claude Desktop loads skills from its own UI, not from disk.
+    return None
 
 
 def _load_config(path: Path) -> dict[str, Any]:
@@ -104,6 +136,7 @@ def _load_config(path: Path) -> dict[str, Any]:
 
 def install_mcp(
     *,
+    client: str = "opencode",
     scope: str = "project",
     project_dir: Path | None = None,
     library_dir: Path | None = None,
@@ -111,19 +144,26 @@ def install_mcp(
     install_skill: bool = True,
     force: bool = False,
 ) -> dict[str, Any]:
+    if client not in CLIENTS:
+        raise ValueError(f"Unknown client {client!r}; expected one of {', '.join(CLIENTS)}")
+    if client == "claude-desktop" and scope == "project":
+        # Claude Desktop reads one config for the whole app.
+        scope = "global"
+
     project_dir = (project_dir or Path.cwd()).expanduser().resolve()
     library_dir = (library_dir or get_default_library_dir()).expanduser().resolve()
     marker_venv = (marker_venv or get_default_marker_venv()).expanduser().resolve()
 
-    config_path = _config_path(scope, project_dir)
+    config_path = _config_path(client, scope, project_dir)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     if config_path.exists() and force:
         config = {}
     else:
         config = _load_config(config_path)
 
-    config.setdefault("$schema", "https://opencode.ai/config.json")
-    command = _binary_command() + [
+    binary, *binary_args = _binary_command()
+    args = [
+        *binary_args,
         "mcp",
         "--library-dir",
         str(library_dir),
@@ -135,31 +175,46 @@ def install_mcp(
     if mailto:
         environment["PAPERFETCH_MAILTO"] = mailto
 
-    mcp = config.setdefault("mcp", {})
-    if not isinstance(mcp, dict):
-        raise ValueError("Existing 'mcp' key in config is not an object")
-    mcp[SKILL_NAME] = {
-        "type": "local",
-        "command": command,
-        "enabled": True,
-        **({"environment": environment} if environment else {}),
-    }
+    if client == "opencode":
+        config.setdefault("$schema", "https://opencode.ai/config.json")
+        servers = config.setdefault("mcp", {})
+        if not isinstance(servers, dict):
+            raise ValueError("Existing 'mcp' key in config is not an object")
+        servers[SKILL_NAME] = {
+            "type": "local",
+            "command": [binary, *args],
+            "enabled": True,
+            **({"environment": environment} if environment else {}),
+        }
+    else:
+        # Both Claude clients use the same mcpServers schema.
+        servers = config.setdefault("mcpServers", {})
+        if not isinstance(servers, dict):
+            raise ValueError("Existing 'mcpServers' key in config is not an object")
+        servers[SKILL_NAME] = {
+            "command": binary,
+            "args": args,
+            **({"env": environment} if environment else {}),
+        }
 
-    tmp_path = config_path.with_suffix(".json.tmp")
+    tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     tmp_path.replace(config_path)
 
     skill_path = None
     if install_skill:
-        skill_path = _skill_path(scope, project_dir)
-        skill_path.parent.mkdir(parents=True, exist_ok=True)
-        skill_path.write_text(SKILL_TEMPLATE, encoding="utf-8")
+        target = _skill_path(client, scope, project_dir)
+        if target is not None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(SKILL_TEMPLATE, encoding="utf-8")
+            skill_path = target
 
     return {
         "config_path": str(config_path),
         "skill_path": str(skill_path) if skill_path else None,
         "server": "paperfetch",
-        "command": command,
+        "client": client,
+        "scope": scope,
         "library_dir": str(library_dir),
         "version": VERSION,
     }
