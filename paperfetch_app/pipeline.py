@@ -190,6 +190,19 @@ def _extract_pdf_document(
         raise ExtractionError(f"marker extraction failed: {exc}") from exc
 
 
+def _score(coverage_report: dict[str, Any]) -> float:
+    """Rank two extraction attempts. An empty or IR-less result always loses."""
+    if coverage_report.get("empty") or not coverage_report.get("ir_available", True):
+        return -1.0
+    ratio = coverage_report.get("ratio")
+    return float(ratio) if ratio is not None else -1.0
+
+
+def _reset_dir(path: Path) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+    ensure_dir(path)
+
+
 def _apply_visuals(document: Document, report: dict[str, Any]) -> None:
     pages = report.get("float_pages", {}) if isinstance(report, dict) else {}
     crops = {entry["id"]: entry for entry in report.get("crops", [])} if isinstance(report, dict) else {}
@@ -377,23 +390,36 @@ def process_one(
                         asset_report = figure_report.to_dict()
                     coverage_report = audit(document, min_ratio=options.min_coverage)
 
-                    # Only fall back when the HTML extraction produced nothing
-                    # usable. A partially-covered IR still carries sections,
-                    # captions and tables, so trading it for a PDF re-extraction
-                    # loses more than it recovers.
-                    if not coverage_report["ok"] and options.extractor == "auto" and coverage_report["empty"]:
+                    # Retry with the PDF whenever the HTML falls short, not only
+                    # when it is empty: marker produces a full IR, so a retry is
+                    # no longer a downgrade. Keep whichever result scores higher
+                    # so a worse re-extraction cannot replace a good one.
+                    if not coverage_report["ok"] and options.extractor == "auto":
                         resolution.notes.append(
-                            f"arXiv HTML unusable ({coverage_report.get('reason')}); falling back to PDF"
+                            f"arXiv HTML fell short ({coverage_report.get('reason')}); retrying with the PDF"
                         )
+                        html_attempt = (document, markdown_text, used_extractor, asset_report, coverage_report)
                         try:
                             if not staging.pdf.exists():
                                 _download_pdf(resolution, options, client, staging.pdf)
+                            # The discarded attempt's images must not linger
+                            # beside the ones the winning extractor writes.
+                            _reset_dir(staging.figures_dir)
                             document, markdown_text, used_extractor, asset_report = _extract_pdf_document(
                                 resolution, options, client, staging, key, marker_cmd, metadata
                             )
                             coverage_report = audit(document, min_ratio=options.min_coverage)
+                            if _score(coverage_report) < _score(html_attempt[4]):
+                                resolution.notes.append("PDF retry scored lower; keeping the arXiv HTML extraction")
+                                _reset_dir(staging.figures_dir)
+                                document, markdown_text, used_extractor, asset_report, coverage_report = html_attempt
+                                if options.download_figures:
+                                    assets_module.ingest_figure_assets(
+                                        document, staging, client, max_bytes=options.max_asset_bytes
+                                    )
                         except Exception as exc:
-                            resolution.notes.append(f"PDF fallback failed: {exc}")
+                            resolution.notes.append(f"PDF retry failed: {exc}")
+                            document, markdown_text, used_extractor, asset_report, coverage_report = html_attempt
 
                 else:
                     coverage_report = audit(document, min_ratio=options.min_coverage)
