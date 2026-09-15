@@ -117,6 +117,31 @@ def search_semantic_scholar(
     return results
 
 
+def lookup_paper(
+    s2_id: str,
+    *,
+    client: HttpClient | None = None,
+    timeout_sec: int = 30,
+    retries: int = 1,
+    backoff: float = 1.5,
+) -> DiscoveredPaper | None:
+    """Look up one paper by Semantic Scholar id (e.g. "arXiv:2504.05662")."""
+    owns = client is None
+    client = client or HttpClient(timeout=timeout_sec, retries=retries, backoff=backoff)
+    try:
+        data = client.get_json(
+            f"https://api.semanticscholar.org/graph/v1/paper/{s2_id}",
+            params={"fields": S2_FIELDS},
+            timeout=timeout_sec,
+            retries=retries,
+            backoff=backoff,
+        )
+    finally:
+        if owns:
+            client.close()
+    return _to_discovered(data)
+
+
 def format_discovered(papers: list[DiscoveredPaper], fmt: str) -> str:
     """Format discovered papers for output."""
     if fmt == "urls":

@@ -92,6 +92,33 @@ def _collect_metadata(
                     metadata[key] = value
         except Exception as exc:
             resolution.notes.append(f"arxiv metadata unavailable: {exc}")
+
+    # arXiv throttles hard, and losing authors/year silently degrades every
+    # BibTeX entry. Semantic Scholar indexes the same papers, so fall back to
+    # it rather than shipping a bundle with no citation metadata.
+    if identity.kind in {"arxiv", "doi"} and not metadata.get("authors"):
+        from .citations import s2_paper_id
+        from .discover import lookup_paper
+
+        found = None
+        try:
+            found = lookup_paper(s2_paper_id(identity), client=client)
+        except Exception as exc:
+            # Say so rather than shipping a bundle that quietly has no authors.
+            resolution.notes.append(f"semantic scholar metadata unavailable: {exc}")
+        if found is not None:
+            enrichment = {
+                "title": found.title,
+                "authors": found.authors,
+                "year": found.year,
+                "abstract": found.abstract,
+                "venue": found.venue,
+                "doi": found.doi,
+            }
+            for key, value in enrichment.items():
+                if value and not metadata.get(key):
+                    metadata[key] = value
+            resolution.notes.append("metadata recovered from Semantic Scholar")
     return metadata
 
 
