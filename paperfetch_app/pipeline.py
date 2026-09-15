@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -18,6 +19,7 @@ from .errors import (
 from .extract.coverage import audit
 from .extract.html_arxiv import extract_arxiv_document
 from .extract.ir import Document
+from .extract.marker_ir import document_from_marker_json
 from .extract.render_markdown import render_markdown
 from .extract.render_text import render_text, strip_markdown
 from .fetch.http import HttpClient
@@ -170,14 +172,21 @@ def _extract_pdf_document(
                 retries=options.marker_retries,
                 backoff_seconds=options.marker_backoff,
                 verbose=options.verbose,
+                output_format="json",
             )
-            markdown_text = result.markdown_path.read_text(encoding="utf-8", errors="replace")
-            markdown_text, asset_report = assets_module.ingest_marker_output(
-                markdown_text, result.output_dir, staging
+            if result.json_path is None:
+                raise ExtractionError("marker produced no JSON output")
+            payload = json.loads(result.json_path.read_text(encoding="utf-8", errors="replace"))
+            document = document_from_marker_json(
+                payload,
+                key=key,
+                source_url=resolution.identity.normalized_url or "",
+                figures_dir=staging.figures_dir,
+                title=str(metadata.get("title") or ""),
             )
-            document = _pdf_shell_document(key, resolution, metadata, "marker")
-            document.coverage["assets"] = asset_report.to_dict()
-            return document, markdown_text, "marker", asset_report.to_dict()
+            # markdown_text is None so the caller renders it from the IR, the
+            # same path the arXiv HTML extractor takes.
+            return document, None, "marker", document.coverage.get("assets", {})
         except Exception as exc:
             last_error = exc
             if options.extractor == "marker":
@@ -449,7 +458,7 @@ def process_one(
 
                 if markdown_text is None:
                     markdown_text = render_markdown(document, metadata=metadata)
-                if used_extractor in {"marker", "pymupdf"}:
+                if used_extractor == "pymupdf":
                     text_output = strip_markdown(markdown_text)
                 else:
                     text_output = render_text(document, metadata=metadata)
