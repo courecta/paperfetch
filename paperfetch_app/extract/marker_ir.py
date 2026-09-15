@@ -50,8 +50,6 @@ REFERENCE_TYPES = {"Reference"}
 # Running headers/footers and page furniture are not document content.
 SKIP_TYPES = {"PageHeader", "PageFooter", "TableOfContents", "Form"}
 
-_CONTAINER_TYPES = {"Document", "Page"} | FIGURE_GROUP_TYPES | TABLE_GROUP_TYPES | LIST_TYPES
-
 
 def _children(node: Any) -> list[dict[str, Any]]:
     if not isinstance(node, dict):
@@ -88,13 +86,21 @@ def _anchor(node: dict[str, Any]) -> SourceAnchor:
 
 
 def _heading_level(node: dict[str, Any]) -> int:
-    """Prefer marker's own hierarchy, else infer from the emitted <hN> tag."""
+    """This heading's own level, else the level of the emitted <hN> tag.
+
+    section_hierarchy maps level -> block id for the hierarchy *enclosing* this
+    heading, so its deepest key is the current nesting depth, not this
+    heading's level. The entry pointing back at this node is the right one.
+    """
     hierarchy = node.get("section_hierarchy")
-    if isinstance(hierarchy, dict) and hierarchy:
-        try:
-            return max(1, min(6, max(int(k) for k in hierarchy)))
-        except (TypeError, ValueError):
-            pass
+    node_id = _node_id(node)
+    if isinstance(hierarchy, dict) and node_id:
+        for level, block_id in hierarchy.items():
+            if block_id == node_id:
+                try:
+                    return max(1, min(6, int(level)))
+                except (TypeError, ValueError):
+                    break
     soup = BeautifulSoup(_html(node), "lxml")
     for level in range(1, 7):
         if soup.find(f"h{level}") is not None:

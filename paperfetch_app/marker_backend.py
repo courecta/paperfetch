@@ -21,6 +21,12 @@ _MARKER_COMMAND_CACHE: dict[str, str | None] = {}
 MARKER_PYTHON_MIN = (3, 10)
 MARKER_PYTHON_MAX = (3, 13)
 
+# marker 2.x moved all inference into surya's vllm/llamacpp/OpenAI backends:
+# the default spawns a Docker container, and there is no in-process path. That
+# breaks the "isolated venv, no daemon" contract this backend relies on, so pin
+# to the 1.x line, which runs the models in-process via transformers.
+MARKER_REQUIREMENT = "marker-pdf>=1.10,<2"
+
 
 def _interpreter_version(executable: str) -> tuple[int, int] | None:
     try:
@@ -39,6 +45,30 @@ def _interpreter_version(executable: str) -> tuple[int, int] | None:
     except ValueError:
         return None
     return (major, minor)
+
+
+def _install_command(marker_venv: Path, venv_bin: Path) -> list[str]:
+    """Install marker with uv when available, falling back to pip.
+
+    marker pulls torch and its CUDA stack -- gigabytes of wheels. pip fetches
+    them one stream at a time from PyPI, which can look indistinguishable from
+    a hang; uv downloads in parallel and reuses a shared wheel cache, turning
+    the same install from hours into under a minute. --only-binary (pip) and
+    --no-build (uv) both fail fast on a missing wheel rather than attempting a
+    source build that dies on absent system headers.
+    """
+    uv = shutil.which("uv")
+    if uv:
+        return [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(venv_bin / "python"),
+            "--no-build",
+            MARKER_REQUIREMENT,
+        ]
+    return [str(venv_bin / "pip"), "install", "--only-binary=:all:", MARKER_REQUIREMENT, "--quiet"]
 
 
 def _select_interpreter(verbose: bool) -> str | None:
@@ -118,11 +148,8 @@ def ensure_marker_command(marker_venv: Path, allow_install: bool, verbose: bool)
             capture_output=not verbose,
             text=True,
         )
-        pip_bin = venv_bin / "pip"
         subprocess.run(
-            # --only-binary fails fast on a missing wheel instead of attempting
-            # a source build that dies on absent system headers.
-            [str(pip_bin), "install", "--only-binary=:all:", "marker-pdf", "--quiet"],
+            _install_command(marker_venv, venv_bin),
             check=True,
             capture_output=not verbose,
             text=True,
@@ -176,7 +203,10 @@ def _find_output(output_dir: Path, pdf_path: Path, suffix: str) -> Path | None:
     expected = output_dir / pdf_path.stem / f"{pdf_path.stem}{suffix}"
     if expected.exists():
         return expected
-    candidates = sorted(output_dir.rglob(f"*{suffix}"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # marker writes a sidecar <stem>_meta.json next to the real output; never
+    # let the fallback scan pick it up as the document.
+    candidates = [p for p in output_dir.rglob(f"*{suffix}") if not p.name.endswith(f"_meta{suffix}")]
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
 
 
