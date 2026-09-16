@@ -602,7 +602,7 @@ def _run_citations(args: argparse.Namespace) -> int:
 
     ranked = [(paper, count) for paper, count in rank_by_frequency(groups) if count >= args.min_seeds]
     known = {entry.get("url") for entry in index.values()}
-    fresh = [paper for paper, _ in ranked if paper.url not in known]
+    fresh = [(paper, count) for paper, count in ranked if paper.url not in known]
 
     print(
         f"{len(seeds) - failures} seeds -> {len(ranked)} neighbours "
@@ -612,11 +612,18 @@ def _run_citations(args: argparse.Namespace) -> int:
     if not fresh:
         return 0
 
-    output = format_discovered(fresh, args.format)
+    if args.format == "tsv":
+        # The seed count is the point of ranking, so put it in the output.
+        lines = ["seeds\ttitle\turl\tyear\tvenue"]
+        lines += [f"{count}\t{p.title}\t{p.url}\t{p.year or ''}\t{p.venue or ''}" for p, count in fresh]
+        output = "\n".join(lines)
+    else:
+        output = format_discovered([p for p, _ in fresh], args.format)
+
     if args.output:
         ensure_dir(args.output.parent)
-        args.output.write_text(output, encoding="utf-8")
-        print(f"Wrote {args.output}")
+        args.output.write_text(output + "\n", encoding="utf-8")
+        print(f"Wrote {args.output}", file=sys.stderr)
     else:
         print(output)
     return 0
