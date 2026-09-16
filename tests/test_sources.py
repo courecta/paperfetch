@@ -88,3 +88,37 @@ class TestRanking:
         dup = _paper("1111.1111")
         ranked = rank_by_frequency([[dup, dup]])
         assert ranked[0][1] == 1
+
+
+class TestMetadataRefresh:
+    def test_bundle_without_authors_or_year_needs_refresh(self):
+        from paperfetch_app.refresh import needs_metadata
+
+        assert needs_metadata({"title": "T"})
+        assert needs_metadata({"title": "T", "authors": ["A"]})  # no year
+        assert needs_metadata({"title": "T", "year": 2026})  # no authors
+        assert not needs_metadata({"title": "T", "authors": ["A"], "year": 2026})
+
+    def test_refresh_reports_a_bundle_with_no_source_url(self, tmp_path):
+        from paperfetch_app.bundle import bundle_paths
+        from paperfetch_app.io_utils import write_json_atomic
+        from paperfetch_app.refresh import refresh_key
+
+        paths = bundle_paths(tmp_path, "k")
+        paths.root.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(paths.meta, {"title": "No URL"})
+        result = refresh_key(tmp_path, "k", client=None, force=False)  # type: ignore[arg-type]
+        assert result["status"] == "failed"
+        assert "source url" in result["reason"]
+
+    def test_refresh_skips_complete_metadata_without_calling_out(self, tmp_path):
+        from paperfetch_app.bundle import bundle_paths
+        from paperfetch_app.io_utils import write_json_atomic
+        from paperfetch_app.refresh import refresh_key
+
+        paths = bundle_paths(tmp_path, "k")
+        paths.root.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(paths.meta, {"title": "T", "authors": ["A"], "year": 2026, "source_url": "u"})
+        # client=None would raise if the network were touched.
+        result = refresh_key(tmp_path, "k", client=None, force=False)  # type: ignore[arg-type]
+        assert result["status"] == "skipped"

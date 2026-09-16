@@ -40,6 +40,7 @@ COMMANDS = {
     "discover",
     "citations",
     "zotero",
+    "refresh-metadata",
     "serve",
     "mcp",
     "migrate",
@@ -174,6 +175,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     cite_cmd.add_argument("--format", choices=["urls", "tsv", "json", "manifest"], default="tsv")
     cite_cmd.add_argument("-o", "--output", type=Path)
+
+    meta_cmd = subparsers.add_parser(
+        "refresh-metadata", help="Backfill authors/year/venue into bundles that lack them."
+    )
+    meta_cmd.add_argument("--library-dir", type=Path, default=DEFAULT_LIBRARY_DIR)
+    meta_cmd.add_argument("--key", action="append", default=[])
+    meta_cmd.add_argument("--all", action="store_true")
+    meta_cmd.add_argument("--force", action="store_true", help="Overwrite metadata that is already present")
 
     zot_cmd = subparsers.add_parser("zotero", help="Read a Zotero library as a list of papers to fetch.")
     zot_cmd.add_argument("--collection", help="Only items in this collection (by name)")
@@ -613,6 +622,45 @@ def _run_citations(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_refresh_metadata(args: argparse.Namespace) -> int:
+    from .pipeline import _entry_from_meta
+    from .refresh import needs_metadata, refresh_library
+    from .service import index_key
+
+    library_dir = args.library_dir.expanduser().resolve()
+    index = load_index(index_path(library_dir))
+    keys = list(index) if args.all else list(args.key)
+    if not keys:
+        print("Pass --key, or --all for the whole library.", file=sys.stderr)
+        return 1
+
+    results = refresh_library(library_dir, keys, force=args.force)
+
+    updated = failed = skipped = 0
+    for key, result in results:
+        status = result["status"]
+        title = (index.get(key, {}).get("title") or key)[:48]
+        if status == "updated":
+            updated += 1
+            index[key] = _entry_from_meta(result["meta"]) | {"key": key}
+            try:
+                index_key(library_dir, key)
+            except Exception as exc:  # the bundle is still correct on disk
+                print(f"note: reindex failed for {title}: {exc}", file=sys.stderr)
+            print(f"[ok] {title}: {', '.join(result['fields']) or 'no new fields'}")
+        elif status == "skipped":
+            skipped += 1
+        else:
+            failed += 1
+            print(f"[fail] {title}: {result.get('reason')}", file=sys.stderr)
+
+    if updated:
+        _save_index_with_lock(library_dir, index)
+    remaining = sum(1 for key in keys if needs_metadata(index.get(key, {})))
+    print(f"updated={updated} skipped={skipped} failed={failed}; {remaining} still incomplete")
+    return 1 if failed and not updated else 0
+
+
 def _run_zotero(args: argparse.Namespace) -> int:
     import csv
     import io
@@ -705,6 +753,7 @@ def main(argv: list[str] | None = None) -> int:
         "discover": _run_discover,
         "citations": _run_citations,
         "zotero": _run_zotero,
+        "refresh-metadata": _run_refresh_metadata,
         "serve": _run_serve,
         "mcp": _run_mcp,
         "migrate": _run_migrate,
