@@ -91,6 +91,24 @@ def _host_is_ip(host: str) -> bool:
         return False
 
 
+S2_API_HOST = "api.semanticscholar.org"
+
+
+def _auth_headers(host: str) -> dict[str, str]:
+    """Credentials for this host only.
+
+    The key is attached per request rather than set on the session: a session
+    header would be sent to every host the client touches -- arXiv, publishers,
+    CDNs -- leaking the credential to third parties that have no business
+    seeing it.
+    """
+    if host == S2_API_HOST or host.endswith("." + S2_API_HOST):
+        api_key = get_s2_api_key()
+        if api_key:
+            return {"x-api-key": api_key}
+    return {}
+
+
 class HttpClient:
     """HTTP client with retries, per-host rate limiting, and content validation."""
 
@@ -215,13 +233,16 @@ class HttpClient:
         timeout_val = timeout if timeout is not None else self.timeout
         last_error: Exception | None = None
 
+        request_headers = dict(headers) if headers else {}
+        request_headers.update(_auth_headers(host))
+
         for attempt in range(attempts + 1):
             self._bucket_for(host).acquire()
             try:
                 response = self.session.request(
                     method,
                     url,
-                    headers=dict(headers) if headers else None,
+                    headers=request_headers or None,
                     params=dict(params) if params else None,
                     stream=stream,
                     allow_redirects=allow_redirects,
@@ -375,12 +396,5 @@ class HttpClient:
 
 
 def default_client(**kwargs: Any) -> HttpClient:
-    """Create a client honoring S2 API keys and common environment settings."""
-    headers: dict[str, str] = {}
-    api_key = get_s2_api_key()
-    if api_key:
-        headers["x-api-key"] = api_key
-    client = HttpClient(**kwargs)
-    if headers:
-        client.session.headers.update(headers)
-    return client
+    """Deprecated alias; HttpClient authenticates Semantic Scholar by itself."""
+    return HttpClient(**kwargs)

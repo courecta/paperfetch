@@ -124,3 +124,32 @@ def test_user_agent_contains_contact_placeholder(monkeypatch):
     monkeypatch.delenv("PAPERFETCH_MAILTO", raising=False)
     agent = get_user_agent()
     assert "paperfetch/" in agent
+
+
+class TestSemanticScholarAuth:
+    def test_key_is_sent_to_semantic_scholar(self, monkeypatch):
+        from paperfetch_app.fetch.http import _auth_headers
+
+        monkeypatch.setenv("PAPERFETCH_S2_API_KEY", "secret-key")
+        assert _auth_headers("api.semanticscholar.org") == {"x-api-key": "secret-key"}
+
+    def test_key_is_never_sent_to_other_hosts(self, monkeypatch):
+        """A session-wide header would leak the credential to every publisher."""
+        from paperfetch_app.fetch.http import _auth_headers
+
+        monkeypatch.setenv("PAPERFETCH_S2_API_KEY", "secret-key")
+        for host in ("arxiv.org", "export.arxiv.org", "openreview.net", "evil.example.com"):
+            assert _auth_headers(host) == {}
+
+    def test_lookalike_host_is_not_trusted(self, monkeypatch):
+        from paperfetch_app.fetch.http import _auth_headers
+
+        monkeypatch.setenv("PAPERFETCH_S2_API_KEY", "secret-key")
+        assert _auth_headers("api.semanticscholar.org.evil.com") == {}
+
+    def test_no_header_without_a_key(self, monkeypatch):
+        from paperfetch_app.fetch.http import _auth_headers
+
+        monkeypatch.delenv("PAPERFETCH_S2_API_KEY", raising=False)
+        monkeypatch.delenv("S2_API_KEY", raising=False)
+        assert _auth_headers("api.semanticscholar.org") == {}
