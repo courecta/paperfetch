@@ -43,8 +43,25 @@ TOOLS = [
                 "extractor": {"type": "string", "enum": ["auto", "arxiv_html", "marker"], "default": "auto"},
                 "force_download": {"type": "boolean", "default": False},
                 "refresh_md": {"type": "boolean", "default": False},
+                "background": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Start in the background and return a job id. Extraction takes minutes per paper, so a foreground fetch of more than one or two papers will outlast the client's tool-call timeout.",
+                },
             },
             "required": ["urls"],
+        },
+    },
+    {
+        "name": "paperfetch_jobs",
+        "description": "Check background ingestion jobs started by paperfetch_fetch.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "Omit to list recent jobs"},
+                "limit": {"type": "integer", "default": 10},
+            },
+            "required": [],
         },
     },
     {
@@ -205,7 +222,14 @@ def _figure_payload(library_dir: Path, key: str, figure_ref: str) -> list[dict[s
     return content
 
 
-def _handle_tool(library_dir: Path, marker_venv: Path, name: str, arguments: dict[str, Any]) -> list[dict[str, Any]]:
+def _handle_tool(
+    library_dir: Path,
+    marker_venv: Path,
+    name: str,
+    arguments: dict[str, Any],
+    out_dir: Path | None = None,
+    project_files: str = "none",
+) -> list[dict[str, Any]]:
     if name == "paperfetch_search":
         year = arguments.get("year")
         year_start = year_end = None
@@ -235,7 +259,28 @@ def _handle_tool(library_dir: Path, marker_venv: Path, name: str, arguments: dic
             force_download=bool(arguments.get("force_download", False)),
             refresh_md=bool(arguments.get("refresh_md", False)),
             marker_venv=marker_venv,
+            out_dir=out_dir,
+            project_files=project_files,
         )
+        if arguments.get("background", True):
+            from .jobs import describe, start_fetch_job
+
+            record = start_fetch_job(
+                library_dir,
+                urls,
+                extractor=str(arguments.get("extractor", "auto")),
+                out_dir=out_dir,
+                project_files=project_files,
+                marker_venv=marker_venv,
+            )
+            return [
+                _text_content(
+                    f"Ingestion started in the background. {describe(record)}\n"
+                    f"Poll with paperfetch_jobs(job_id=\"{record['id']}\"). "
+                    "Expect roughly 1-2 minutes per paper."
+                )
+            ]
+
         papers = [PaperInput(slug="", title="", url=url, source="mcp") for url in urls]
         results = service.fetch_papers(library_dir, papers, options)
         lines = []
@@ -328,6 +373,27 @@ def _handle_tool(library_dir: Path, marker_venv: Path, name: str, arguments: dic
         )
         return [_text_content(f"Saved annotation #{annotation_id}")]
 
+    if name == "paperfetch_jobs":
+        from .jobs import describe, get_job, list_jobs
+
+        job_id = arguments.get("job_id")
+        if job_id:
+            record = get_job(library_dir, str(job_id))
+            if record is None:
+                raise PaperfetchError(f"Unknown job: {job_id}")
+            lines = [describe(record)]
+            for row in record.get("results", []):
+                mark = "ok" if row.get("ok") else "fail"
+                lines.append(f"  [{mark}] {row.get('title') or row.get('url')}" + (
+                    f" - {row['error']}" if row.get("error") else ""
+                ))
+            return [_text_content("\n".join(lines))]
+
+        records = list_jobs(library_dir, limit=int(arguments.get("limit", 10)))
+        if not records:
+            return [_text_content("No ingestion jobs recorded.")]
+        return [_text_content("\n".join(describe(r) for r in records))]
+
     if name == "paperfetch_export":
         idx = locked_load_index(library_dir)
         keys: set[str] = set(arguments.get("keys") or [])
@@ -350,7 +416,12 @@ def _handle_tool(library_dir: Path, marker_venv: Path, name: str, arguments: dic
     raise PaperfetchError(f"Unknown tool: {name}")
 
 
-def run_stdio_server(library_dir: Path, marker_venv: Path | None = None) -> None:
+def run_stdio_server(
+    library_dir: Path,
+    marker_venv: Path | None = None,
+    out_dir: Path | None = None,
+    project_files: str = "none",
+) -> None:
     from .config import get_default_marker_venv
 
     library_dir = library_dir.expanduser().resolve()
@@ -395,7 +466,7 @@ def run_stdio_server(library_dir: Path, marker_venv: Path | None = None) -> None
             tool_name = str(params.get("name", ""))
             arguments = params.get("arguments", {}) or {}
             try:
-                content = _handle_tool(library_dir, marker_venv, tool_name, arguments)
+                content = _handle_tool(library_dir, marker_venv, tool_name, arguments, out_dir, project_files)
                 _send_result(req_id, {"content": content})
             except PaperfetchError as exc:
                 _send_error(req_id, -32602, str(exc))

@@ -57,6 +57,7 @@ def measure_bundle(bundle: Path) -> dict[str, Any]:
 
     coverage = meta.get("coverage") or {}
     return {
+        "title": meta.get("title") or bundle.name,
         "extractor": meta.get("source_kind"),
         "blocks": len(blocks),
         "headings": kinds.get("heading", 0),
@@ -96,11 +97,13 @@ def run_corpus(library: Path, extractor: str, verbose: bool) -> dict[str, dict[s
     results: dict[str, dict[str, Any]] = {}
     for meta_path in sorted(library.glob("*/meta.json")):
         bundle = meta_path.parent
+        # Key on the content-addressed bundle id, not the title: recovering
+        # better metadata renames a paper ("Adam" -> "Adam: A Method for
+        # Stochastic Optimization") and would otherwise read as a regression.
         try:
-            meta = json.loads(meta_path.read_text())
-            results[str(meta.get("title") or bundle.name)] = measure_bundle(bundle)
+            results[bundle.name] = measure_bundle(bundle)
         except Exception as exc:
-            results[bundle.name] = {"error": str(exc)}
+            results[bundle.name] = {"error": str(exc), "title": bundle.name}
     return results
 
 
@@ -109,8 +112,9 @@ NUMERIC = ("blocks", "headings", "figures", "captioned_figures", "tables", "tabl
 
 def compare(current: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
     failures: list[str] = []
-    for title, expected in baseline.items():
-        got = current.get(title)
+    for key, expected in baseline.items():
+        title = expected.get("title", key)[:46]
+        got = current.get(key)
         if got is None:
             failures.append(f"{title}: missing from this run")
             continue
@@ -120,9 +124,9 @@ def compare(current: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
             want, have = expected.get(field, 0), got.get(field, 0)
             if want and have < want * TOLERANCE:
                 failures.append(f"{title}: {field} {have} < {want} baseline (tolerance {TOLERANCE:.0%})")
-    for title in current:
-        if title not in baseline:
-            print(f"note: {title} is new and has no baseline")
+    for key, row in current.items():
+        if key not in baseline:
+            print(f"note: {row.get('title', key)[:46]} is new and has no baseline")
     return failures
 
 
@@ -130,7 +134,8 @@ def render(results: dict[str, Any]) -> None:
     head = f"{'paper':28}{'via':11}{'blocks':8}{'head':6}{'eq':5}{'figs':6}{'cap':5}{'tbl':5}{'rows':6}{'crop':6}"
     print(head)
     print("-" * len(head))
-    for title, row in sorted(results.items()):
+    for row in sorted(results.values(), key=lambda r: str(r.get("title", ""))):
+        title = str(row.get("title", "?"))
         if "error" in row:
             print(f"{title[:26]:28}ERROR {row['error'][:40]}")
             continue

@@ -118,3 +118,20 @@ class TestConcurrency:
     def test_worker_count_is_clamped(self, options):
         results = run_fetch([paper("https://arxiv.org/abs/2401.00001")], options(workers=0), None, {})
         assert len(results) == 1 and results[0].success
+
+
+class TestSlugs:
+    @pytest.mark.parametrize(
+        "identity_value,must_contain",
+        [
+            ("2504.05662", "05662"),
+            ("1706.03762", "03762"),
+            ("10.1109/CVPR.2019.00982", "00982"),
+        ],
+    )
+    def test_identifier_slugs_keep_the_distinguishing_part(self, identity_value, must_contain):
+        """Path(...).stem truncates at the first dot: every 2504.* paper became "2504"."""
+        from paperfetch_app.io_utils import safe_slug
+
+        assert must_contain in safe_slug(identity_value)
+        assert must_contain not in Path(identity_value).stem

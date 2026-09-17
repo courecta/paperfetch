@@ -41,7 +41,12 @@ def _to_sdk_content(items: list[dict[str, Any]]) -> list[Any]:
     return out
 
 
-def build_fastmcp_server(library_dir: Path, marker_venv: Path) -> Any:
+def build_fastmcp_server(
+    library_dir: Path,
+    marker_venv: Path,
+    out_dir: Path | None = None,
+    project_files: str = "none",
+) -> Any:
     server_class = _fastmcp_class()
     if server_class is None:
         raise RuntimeError("mcp SDK is not installed")
@@ -65,15 +70,32 @@ def build_fastmcp_server(library_dir: Path, marker_venv: Path) -> Any:
         extractor: str = "auto",
         force_download: bool = False,
         refresh_md: bool = False,
+        background: bool = True,
     ) -> list[Any]:
-        """Download papers into the local library; figures/tables are preserved in the bundle."""
+        """Ingest papers into the local library; figures/tables are preserved in the bundle.
+
+        Runs in the background by default and returns a job id, because
+        extraction takes minutes per paper and would otherwise outlast the
+        client's tool-call timeout. Poll with paperfetch_jobs.
+        """
         args = {
             "urls": urls,
             "extractor": extractor,
             "force_download": force_download,
             "refresh_md": refresh_md,
+            "background": background,
         }
-        return _to_sdk_content(_handle_tool(library_dir, marker_venv, "paperfetch_fetch", args))
+        return _to_sdk_content(
+            _handle_tool(library_dir, marker_venv, "paperfetch_fetch", args, out_dir, project_files)
+        )
+
+    @server.tool()
+    def paperfetch_jobs(job_id: str = "", limit: int = 10) -> list[Any]:
+        """Check background ingestion jobs; omit job_id to list recent ones."""
+        args: dict[str, Any] = {"limit": limit}
+        if job_id:
+            args["job_id"] = job_id
+        return _to_sdk_content(_handle_tool(library_dir, marker_venv, "paperfetch_jobs", args))
 
     @server.tool()
     def paperfetch_outline(key: str) -> list[Any]:
@@ -129,12 +151,17 @@ def build_fastmcp_server(library_dir: Path, marker_venv: Path) -> Any:
     return server
 
 
-def run_mcp_server(library_dir: Path, marker_venv: Path | None = None) -> None:
+def run_mcp_server(
+    library_dir: Path,
+    marker_venv: Path | None = None,
+    out_dir: Path | None = None,
+    project_files: str = "none",
+) -> None:
     library_dir = library_dir.expanduser().resolve()
     marker_venv = (marker_venv or get_default_marker_venv()).expanduser().resolve()
 
     if _sdk_available():
-        server = build_fastmcp_server(library_dir, marker_venv)
+        server = build_fastmcp_server(library_dir, marker_venv, out_dir, project_files)
         server.run()
         return
 
@@ -146,4 +173,4 @@ def run_mcp_server(library_dir: Path, marker_venv: Path | None = None) -> None:
     )
     from .mcp_stdio import run_stdio_server
 
-    run_stdio_server(library_dir, marker_venv)
+    run_stdio_server(library_dir, marker_venv, out_dir, project_files)

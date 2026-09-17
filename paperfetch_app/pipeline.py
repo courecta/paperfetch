@@ -317,7 +317,10 @@ def process_one(
     chosen_slug = (
         existing.get("slug")
         if isinstance(existing.get("slug"), str) and existing.get("slug")
-        else safe_slug(paper.slug or paper.title or Path(identity.value).stem or "paper")
+        # Not Path(...).stem: it truncates at the first dot, so arXiv id
+        # "2504.05662" would become "2504" and collide with every other paper
+        # from that month.
+        else safe_slug(paper.slug or paper.title or identity.value or "paper")
     )
     final = bundle_paths(options.library_dir, key)
 

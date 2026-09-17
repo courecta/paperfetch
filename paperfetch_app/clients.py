@@ -141,6 +141,8 @@ def install_mcp(
     project_dir: Path | None = None,
     library_dir: Path | None = None,
     marker_venv: Path | None = None,
+    out_dir: Path | None = None,
+    project_files: str = "both",
     install_skill: bool = True,
     force: bool = False,
 ) -> dict[str, Any]:
@@ -170,6 +172,10 @@ def install_mcp(
         "--marker-venv",
         str(marker_venv),
     ]
+    if out_dir is not None:
+        # Without this the agent's fetches land only in the content-addressed
+        # library; with it, readable copies also appear in the project.
+        args += ["--out-dir", str(out_dir.expanduser().resolve()), "--project-files", project_files]
     environment: dict[str, str] = {}
     mailto = get_mailto()
     if mailto:
@@ -216,5 +222,6 @@ def install_mcp(
         "client": client,
         "scope": scope,
         "library_dir": str(library_dir),
+        "out_dir": str(out_dir.expanduser().resolve()) if out_dir else None,
         "version": VERSION,
     }

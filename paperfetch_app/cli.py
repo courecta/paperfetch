@@ -204,6 +204,10 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_cmd = subparsers.add_parser("mcp", help="Start MCP server over stdio.")
     mcp_cmd.add_argument("--library-dir", type=Path, default=DEFAULT_LIBRARY_DIR)
     mcp_cmd.add_argument("--marker-venv", type=Path, default=DEFAULT_MARKER_VENV)
+    mcp_cmd.add_argument(
+        "--out-dir", type=Path, help="Also write readable copies here when the agent ingests a paper"
+    )
+    mcp_cmd.add_argument("--project-files", choices=["md", "both", "none", "figures"], default="both")
 
     migrate_cmd = subparsers.add_parser("migrate", help="Migrate legacy flat libraries to bundles.")
     migrate_cmd.add_argument("--library-dir", type=Path, default=DEFAULT_LIBRARY_DIR)
@@ -211,6 +215,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     install_cmd = subparsers.add_parser("install-mcp", help="Register the paperfetch MCP server with an agent client.")
     install_cmd.add_argument("--client", choices=["opencode", "claude-code", "claude-desktop"], default="claude-code")
+    install_cmd.add_argument(
+        "--out-dir",
+        type=Path,
+        help="Also write readable .md/.pdf/figures here when the agent ingests a paper",
+    )
+    install_cmd.add_argument("--project-files", choices=["md", "both", "none", "figures"], default="both")
     install_cmd.add_argument("--scope", choices=["project", "global"], default="project")
     install_cmd.add_argument("--project-dir", type=Path, default=Path.cwd())
     install_cmd.add_argument("--library-dir", type=Path, default=DEFAULT_LIBRARY_DIR)
@@ -539,6 +549,8 @@ def _run_install_mcp(args: argparse.Namespace) -> int:
         summary = install_mcp(
             client=args.client,
             scope=args.scope,
+            out_dir=args.out_dir,
+            project_files=args.project_files,
             project_dir=args.project_dir,
             library_dir=args.library_dir,
             marker_venv=args.marker_venv,
@@ -742,7 +754,12 @@ def _run_mcp(args: argparse.Namespace) -> int:
     if not _HAS_MCP:
         print("MCP server module not available.", file=sys.stderr)
         return 1
-    run_mcp_server(library_dir=args.library_dir, marker_venv=args.marker_venv)
+    run_mcp_server(
+        library_dir=args.library_dir,
+        marker_venv=args.marker_venv,
+        out_dir=args.out_dir,
+        project_files=args.project_files if args.out_dir else "none",
+    )
     return 0
 
 
