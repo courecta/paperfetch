@@ -100,9 +100,11 @@ library/<key>/
 `library/index.json` is kept as a portable metadata export; the queryable index
 lives in `library.sqlite3` (WAL + FTS5).
 
-`crops/` is cut from the layout model's own bounding boxes, so it is populated
-for papers extracted via Marker. arXiv HTML papers carry their real figure
-images from source instead, and get `pages/` but no crops.
+Each entry in `crops/manifest.json` records its `precision`. Floats extracted
+by Marker carry layout bounding boxes and are cropped `exact`; floats from
+arXiv HTML have no page geometry, so they are located by searching the PDF for
+their caption and cropped `approximate` -- roughly framed, and possibly
+clipping or including a neighbour.
 
 ## Commands
 
@@ -110,6 +112,9 @@ images from source instead, and get `pages/` but no crops.
 |---|---|
 | `fetch` | Resolve, download, extract, and store papers |
 | `discover` | Search Semantic Scholar |
+| `citations` | Walk the citation graph around papers you already hold |
+| `zotero` | Read a Zotero library as a list of papers to fetch |
+| `refresh-metadata` | Backfill authors/year/venue into bundles that lack them |
 | `list` / `inspect` | Browse the library and bundles |
 | `reextract` | Re-run extraction with a different backend |
 | `export` | BibTeX export (collision-free keys) |
@@ -117,7 +122,7 @@ images from source instead, and get `pages/` but no crops.
 | `migrate` | Convert legacy flat libraries to bundles |
 | `serve` | FastAPI HTTP API |
 | `mcp` | MCP server over stdio |
-| `install-mcp` | Register paperfetch with opencode |
+| `install-mcp` | Register the MCP server with Claude Code, Claude Desktop or opencode |
 
 Useful flags:
 
@@ -147,30 +152,57 @@ built-in stdio implementation when the SDK is not installed). Tools:
 - `paperfetch_annotate` — save quotes/notes on a bundle
 - `paperfetch_export` — BibTeX export (collision-free keys)
 
-### opencode
+### Installing the server
 
 ```bash
-paperfetch install-mcp --scope project     # writes ./opencode.json + .opencode/skills/paperfetch/SKILL.md
-# or
-paperfetch install-mcp --scope global
+paperfetch install-mcp --client claude-code --library-dir ./library     # ./.mcp.json
+paperfetch install-mcp --client claude-code --scope global              # ~/.claude.json
+paperfetch install-mcp --client claude-desktop                          # app-wide config
+paperfetch install-mcp --client opencode                                # ./opencode.json
 ```
 
-The command merges an entry into `opencode.json`:
+Existing servers in the config are preserved. Claude Code and Claude Desktop
+use the `mcpServers` schema:
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
+  "mcpServers": {
     "paperfetch": {
-      "type": "local",
-      "command": ["paperfetch", "mcp", "--library-dir", "/home/you/papers/library"],
-      "enabled": true
+      "command": "/path/to/paperfetch",
+      "args": ["mcp", "--library-dir", "/home/you/papers/library"]
     }
   }
 }
 ```
 
-Restart opencode after installing so the MCP server is loaded.
+A skill file is written next to the config for Claude Code
+(`.claude/skills/paperfetch/SKILL.md`) and opencode; Claude Desktop loads
+skills through its own UI. Restart the client afterwards.
+
+## Building a reading list
+
+The ingestion sources compose: each emits the same manifest CSV that `fetch`
+consumes.
+
+```bash
+# From a curated markdown list (an "awesome" repo, say)
+python scripts/awesome_to_manifest.py awesome.md --section "CVPR 2026" -o papers.csv
+paperfetch fetch --manifest papers.csv --library-dir ./library
+
+# From a Zotero collection, read over the local API (no key, nothing leaves the machine)
+paperfetch zotero --collection "Anomaly Detection" -o papers.csv
+
+# Then expand outwards: what does this reading list collectively cite?
+paperfetch citations --all --direction references --min-seeds 4 -o related.tsv
+paperfetch citations --all --min-seeds 8 --format manifest -o foundations.csv
+```
+
+`citations` ranks neighbours by how many of your papers reached them, so a work
+cited by a third of a reading list rises to the top, and already-held papers
+are filtered out.
+
+Set `PAPERFETCH_S2_API_KEY` before bulk runs. Unauthenticated Semantic Scholar
+requests share one rate-limited pool and will start failing partway through.
 
 ## HTTP API
 
