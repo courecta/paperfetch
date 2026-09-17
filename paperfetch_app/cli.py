@@ -601,12 +601,21 @@ def _run_citations(args: argparse.Namespace) -> int:
         client.close()
 
     ranked = [(paper, count) for paper, count in rank_by_frequency(groups) if count >= args.min_seeds]
+
+    # Reference records that Semantic Scholar extracted from bibliographies
+    # carry no arXiv id or DOI, and their titles are often mangled ("PyTorch:
+    # An Imperative Style..." arrives as ": An imperative style"). Nothing can
+    # fetch them, so drop them -- but say how many rather than quietly shrink.
+    unresolvable = [p for p, _ in ranked if not (p.arxiv_id or p.doi)]
+    resolvable = [(p, c) for p, c in ranked if p.arxiv_id or p.doi]
+
     known = {entry.get("url") for entry in index.values()}
-    fresh = [(paper, count) for paper, count in ranked if paper.url not in known]
+    fresh = [(paper, count) for paper, count in resolvable if paper.url not in known]
 
     print(
         f"{len(seeds) - failures} seeds -> {len(ranked)} neighbours "
-        f"(>= {args.min_seeds} seed(s)), {len(fresh)} not already in the library",
+        f"(>= {args.min_seeds} seed(s)); {len(unresolvable)} without a DOI or arXiv id, "
+        f"{len(fresh)} fetchable and not already in the library",
         file=sys.stderr,
     )
     if not fresh:

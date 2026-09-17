@@ -122,3 +122,26 @@ class TestMetadataRefresh:
         # client=None would raise if the network were touched.
         result = refresh_key(tmp_path, "k", client=None, force=False)  # type: ignore[arg-type]
         assert result["status"] == "skipped"
+
+
+class TestDiscoveredUrls:
+    def test_null_paper_id_does_not_become_a_none_url(self):
+        from paperfetch_app.discover import _to_discovered
+
+        # Bibliography-extracted records carry paperId: null.
+        paper = _to_discovered({"title": "A paper", "paperId": None})
+        assert paper is not None
+        assert paper.url is None
+        assert paper.paper_id == ""
+
+    def test_arxiv_id_wins_over_the_s2_page(self):
+        from paperfetch_app.discover import _to_discovered
+
+        paper = _to_discovered({"title": "T", "paperId": "abc", "externalIds": {"ArXiv": "2504.05662"}})
+        assert paper.url == "https://arxiv.org/abs/2504.05662"
+
+    def test_s2_page_is_used_when_a_paper_id_exists(self):
+        from paperfetch_app.discover import _to_discovered
+
+        paper = _to_discovered({"title": "T", "paperId": "abc123"})
+        assert paper.url == "https://www.semanticscholar.org/paper/abc123"

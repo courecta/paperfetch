@@ -51,10 +51,13 @@ def _to_discovered(raw: dict[str, Any]) -> DiscoveredPaper | None:
     elif pdf_url:
         url = pdf_url
     else:
-        url = f"https://www.semanticscholar.org/paper/{raw.get('paperId', '')}"
+        # paperId is present-but-null on bibliography-extracted records, so a
+        # plain .get default would build ".../paper/None".
+        paper_id = raw.get("paperId") or ""
+        url = f"https://www.semanticscholar.org/paper/{paper_id}" if paper_id else None
 
     return DiscoveredPaper(
-        paper_id=raw.get("paperId", ""),
+        paper_id=raw.get("paperId") or "",
         title=title,
         authors=authors,
         year=year,
