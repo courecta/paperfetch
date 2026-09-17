@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -478,7 +479,27 @@ def rebuild(conn: sqlite3.Connection, library_dir: Path) -> dict[str, int]:
     return {"indexed": indexed}
 
 
+def fts_query(query: str) -> str:
+    """Make a user's phrase safe for FTS5.
+
+    FTS5 reads bare punctuation as syntax: "zero-shot" parses as the column
+    "zero" minus the token "shot" and raises `no such column: shot`. Research
+    vocabulary is full of such terms (few-shot, self-supervised, multi-class),
+    so quote each token into a literal string instead. Explicit operators are
+    left alone when the caller clearly meant them.
+    """
+    stripped = query.strip()
+    if not stripped:
+        return '""'
+    # An already-quoted or operator-bearing query is taken at face value.
+    if '"' in stripped or any(op in stripped.split() for op in ("AND", "OR", "NOT", "NEAR")):
+        return stripped
+    tokens = [token for token in re.split(r"\s+", stripped) if token]
+    return " ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+
+
 def search(conn: sqlite3.Connection, query: str, *, paper_key: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+    query = fts_query(query)
     sql = (
         "SELECT paper_key, section_id, ordinal, "
         "snippet(chunks_fts, 3, '[', ']', ' ... ', 12) AS snippet, "

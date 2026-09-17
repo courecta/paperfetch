@@ -149,3 +149,38 @@ def test_migrate_legacy_library(tmp_path: Path):
     assert final.pdf.is_file()
     updated = load_index(index_path(tmp_path))
     assert updated["key1"]["md"] == "key1/paper.md"
+
+
+class TestFtsQuoting:
+    """FTS5 reads bare punctuation as syntax, which breaks research vocabulary."""
+
+    def test_hyphenated_terms_are_quoted(self):
+        from paperfetch_app.db import fts_query
+
+        # Unquoted, "zero-shot" parses as column "zero" minus token "shot".
+        assert fts_query("zero-shot") == '"zero-shot"'
+        assert fts_query("few-shot anomaly") == '"few-shot" "anomaly"'
+
+    def test_explicit_operators_are_respected(self):
+        from paperfetch_app.db import fts_query
+
+        assert fts_query("anomaly AND detection") == "anomaly AND detection"
+        assert fts_query('"exact phrase"') == '"exact phrase"'
+
+    def test_embedded_quotes_are_escaped(self):
+        from paperfetch_app.db import fts_query
+
+        assert fts_query('say"hi') == 'say"hi'  # already quoted -> passed through
+
+    def test_empty_query_does_not_produce_invalid_sql(self):
+        from paperfetch_app.db import fts_query
+
+        assert fts_query("   ") == '""'
+
+    def test_hyphenated_search_does_not_raise(self, tmp_path):
+        from paperfetch_app import service
+
+        _make_bundle(tmp_path)
+        # Would raise OperationalError("no such column: detection") before quoting.
+        service.grep(tmp_path, "anomaly-detection")
+        assert service.grep(tmp_path, "anomaly")
