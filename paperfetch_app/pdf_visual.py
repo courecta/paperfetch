@@ -29,7 +29,14 @@ def _crop_margins(bbox: list[float], width: float, height: float) -> tuple[float
     return (left, height - bottom, width - right, top)
 
 
+# How far a float is assumed to extend from its caption, as a fraction of page
+# height, when no bounding box is available.
+CAPTION_SPAN = 0.55
+CAPTION_MARGIN = 0.04
+
+
 def _float_targets(document: Document) -> list[tuple[str, str, list[float], int]]:
+    """Floats with a layout-model bbox, which can be cropped exactly."""
     targets: list[tuple[str, str, list[float], int]] = []
     for block in document.blocks:
         if block.kind not in {"figure", "table"}:
@@ -40,6 +47,68 @@ def _float_targets(document: Document) -> list[tuple[str, str, list[float], int]
             continue
         targets.append((block.id, block.kind, [float(v) for v in bbox], page))
     return targets
+
+
+def _caption_targets(document: Document) -> list[tuple[str, str, str]]:
+    """Floats with no bbox, identified by the caption text to search for.
+
+    arXiv HTML carries no page geometry, so these are located by finding the
+    caption on the page and taking a band around it. Approximate, but a roughly
+    framed crop is more useful than none.
+    """
+    targets: list[tuple[str, str, str]] = []
+    for block in document.blocks:
+        if block.kind not in {"figure", "table"}:
+            continue
+        if block.meta.get("bbox"):
+            continue
+        float_obj = block.figure if block.kind == "figure" else block.table
+        if float_obj is None:
+            continue
+        needle = (float_obj.label or "").strip().rstrip(":")
+        if not needle:
+            caption = "".join(i.text for i in (float_obj.caption or []) if i.text).strip()
+            needle = caption[:40].rsplit(" ", 1)[0] if len(caption) > 40 else caption
+        if needle:
+            targets.append((block.id, block.kind, needle))
+    return targets
+
+
+def _find_caption(pdf: Any, needle: str) -> tuple[int, tuple[float, float, float, float]] | None:
+    """First page containing this text, with its rect in PDF points."""
+    for page_index in range(len(pdf)):
+        textpage = pdf[page_index].get_textpage()
+        try:
+            searcher = textpage.search(needle, match_case=False, match_whole_word=False)
+            hit = searcher.get_next()
+            if hit is None:
+                continue
+            index, count = hit
+            if textpage.count_rects(index, count) < 1:
+                continue
+            return page_index, tuple(textpage.get_rect(0))
+        except Exception:
+            continue
+        finally:
+            textpage.close()
+    return None
+
+
+def _band_around_caption(
+    rect: tuple[float, float, float, float],
+    kind: str,
+    height: float,
+) -> tuple[float, float, float, float]:
+    """Crop margins for a band around a caption (pypdfium2 uses bottom-left origin)."""
+    _, bottom, _, top = rect
+    span, margin = CAPTION_SPAN * height, CAPTION_MARGIN * height
+    if kind == "table":
+        # Tables sit below their caption, so extend downwards.
+        low, high = max(0.0, bottom - span), min(height, top + margin)
+    else:
+        # Figures sit above their caption.
+        low, high = max(0.0, bottom - margin), min(height, top + span)
+    return (0.0, low, 0.0, height - high)
 
 
 def render_pdf_visuals(
@@ -95,6 +164,30 @@ def render_pdf_visuals(
                     "kind": kind,
                     "page": page_index + 1,
                     "path": f"crops/{crop_name}",
+                    "precision": "exact",
+                }
+            )
+
+        for element_id, kind, needle in _caption_targets(document):
+            found = _find_caption(pdf, needle)
+            if found is None:
+                continue
+            page_index, rect = found
+            page = pdf[page_index]
+            _, height = page.get_size()
+            report["float_pages"][element_id] = page_index + 1
+            image = page.render(scale=crop_dpi / 72.0, crop=_band_around_caption(rect, kind, height)).to_pil()
+            crop_name = f"{safe_slug(element_id, max_length=50)}.png"
+            image.save(paths.crops_dir / crop_name)
+            report["crops"].append(
+                {
+                    "id": element_id,
+                    "kind": kind,
+                    "page": page_index + 1,
+                    "path": f"crops/{crop_name}",
+                    # Located from caption text, not a bounding box: the framing
+                    # is a guess and may clip or include neighbouring content.
+                    "precision": "approximate",
                 }
             )
     finally:
