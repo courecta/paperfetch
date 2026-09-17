@@ -119,3 +119,40 @@ def test_claude_desktop_is_always_global(tmp_path: Path, monkeypatch: pytest.Mon
 def test_unknown_client_is_rejected(tmp_path: Path):
     with pytest.raises(ValueError, match="Unknown client"):
         install_mcp(client="emacs", project_dir=tmp_path)
+
+
+class TestServerInstructions:
+    """MCP's initialize response carries orientation for the model."""
+
+    def test_shared_library_warning_appears_when_a_project_dir_is_configured(self, tmp_path: Path):
+        from paperfetch_app.mcp_stdio import server_instructions
+
+        text = server_instructions(tmp_path / "lib", tmp_path / "papers", "both")
+        assert "hardlinks into the shared library" in text
+        assert "Deleting a link is safe" in text
+        assert str(tmp_path / "lib") in text
+
+    def test_no_link_warning_without_project_files(self, tmp_path: Path):
+        from paperfetch_app.mcp_stdio import server_instructions
+
+        # Nothing is materialized, so there are no links to warn about.
+        text = server_instructions(tmp_path / "lib", None, "none")
+        assert "hardlinks into the shared library" not in text
+        assert "Project copies:" not in text
+        assert str(tmp_path / "lib") in text
+
+    def test_reading_protocol_is_stated(self, tmp_path: Path):
+        from paperfetch_app.mcp_stdio import server_instructions
+
+        text = server_instructions(tmp_path / "lib", None, "none")
+        assert "paperfetch_outline" in text and "paperfetch_read" in text
+        assert "background" in text
+
+    def test_skill_carries_the_same_warning(self, tmp_path: Path):
+        summary = install_mcp(
+            client="claude-code", project_dir=tmp_path, library_dir=tmp_path / "lib", out_dir=tmp_path / "papers"
+        )
+        skill = Path(summary["skill_path"]).read_text(encoding="utf-8")
+        # Clients that ignore `instructions` still get it via the skill.
+        assert "hardlinks into that library" in skill
+        assert "background" in skill

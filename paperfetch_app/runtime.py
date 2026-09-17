@@ -21,6 +21,10 @@ def default_fetch_options(
     install_marker: bool = True,
     out_dir: Path | None = None,
     project_files: str = "none",
+    # Hardlink rather than copy: the library is shared across projects, and
+    # figures are the bulk of a bundle. materialize falls back to copying when
+    # the project sits on a different filesystem.
+    link_mode: str = "hardlink",
     workers: int = 4,
     **overrides: Any,
 ) -> FetchOptions:
@@ -28,7 +32,7 @@ def default_fetch_options(
         library_dir=library_dir,
         out_dir=out_dir,
         project_files=project_files,
-        link_mode="copy",
+        link_mode=link_mode,
         overwrite=False,
         force_download=force_download,
         refresh_md=refresh_md,

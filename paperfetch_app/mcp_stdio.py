@@ -416,13 +416,53 @@ def _handle_tool(
     raise PaperfetchError(f"Unknown tool: {name}")
 
 
+def server_instructions(library_dir: Path, out_dir: Path | None, project_files: str) -> str:
+    """Orientation sent to the model when the client connects.
+
+    MCP's initialize response carries this, so an agent learns how the library
+    is laid out before its first call rather than after a mistake.
+    """
+    lines = [
+        "paperfetch serves a local library of academic papers extracted losslessly: "
+        "sections, figures with captions, tables with their spans preserved, equations as LaTeX, "
+        "and page crops of each float.",
+        "",
+        f"Library: {library_dir}",
+    ]
+    if out_dir is not None and project_files != "none":
+        lines += [
+            f"Project copies: {out_dir}",
+            "",
+            "IMPORTANT: files under the project directory are hardlinks into the shared library, "
+            "not independent copies. Editing one in place rewrites the bytes every project and the "
+            "library itself see. Deleting a link is safe; modifying content is not. Treat them as "
+            "read-only, and write any derived notes to a separate file.",
+        ]
+    lines += [
+        "",
+        "How to work with it:",
+        "- Never guess what a paper says. Quote the extracted text and cite the bundle key.",
+        "- Read in stages: paperfetch_outline to see sections and their sizes, then paperfetch_read "
+        "with a section id, paging via offset/next_offset. Do not pull a whole paper into context.",
+        "- paperfetch_grep searches the full text of every paper at once; prefer it to reading files.",
+        "- paperfetch_figure returns the image itself, and paperfetch_table the real table rather "
+        "than a markdown approximation.",
+        "- Ingestion runs in the background because extraction takes 1-2 minutes per paper. "
+        "paperfetch_fetch returns a job id; report that to the user and poll paperfetch_jobs "
+        "instead of waiting.",
+        "- The library is shared with other projects, so it may contain papers unrelated to the "
+        "current work. Filter by what you are asked about.",
+    ]
+    return "\n".join(lines)
+
+
 def run_stdio_server(
     library_dir: Path,
     marker_venv: Path | None = None,
     out_dir: Path | None = None,
     project_files: str = "none",
 ) -> None:
-    from .config import get_default_marker_venv
+    from .config import VERSION, get_default_marker_venv
 
     library_dir = library_dir.expanduser().resolve()
     marker_venv = (marker_venv or get_default_marker_venv()).expanduser().resolve()
@@ -446,7 +486,8 @@ def run_stdio_server(
                 {
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "paperfetch", "version": "0.4.0"},
+                    "serverInfo": {"name": "paperfetch", "version": VERSION},
+                    "instructions": server_instructions(library_dir, out_dir, project_files),
                 },
             )
             continue

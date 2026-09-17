@@ -52,9 +52,11 @@ def build_fastmcp_server(
         raise RuntimeError("mcp SDK is not installed")
 
     from .mcp_stdio import DEFAULT_MAX_CHARS as _DEFAULT
-    from .mcp_stdio import _handle_tool
+    from .mcp_stdio import _handle_tool, server_instructions
 
-    server = server_class("paperfetch")
+    # The SDK surfaces `instructions` in the initialize response, same as the
+    # built-in server, so an agent is oriented before its first call.
+    server = server_class("paperfetch", instructions=server_instructions(library_dir, out_dir, project_files))
 
     @server.tool()
     def paperfetch_search(query: str, limit: int = 10, year: str = "", open_access: bool = False) -> list[Any]:

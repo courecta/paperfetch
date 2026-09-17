@@ -56,6 +56,25 @@ markdown, and view figure PNGs directly (local images are readable).
 - `paperfetch_annotate` — save quotes/notes.
 - `paperfetch_export` — BibTeX export.
 
+## The library is shared
+
+Papers live in one library (default `~/papers/library`) that every project on
+this machine draws from. Files in a project's `papers/` directory are
+**hardlinks into that library, not copies**: editing one in place rewrites the
+bytes the library and every other project see. Deleting a link is safe;
+modifying content is not. Treat them as read-only and write derived notes
+elsewhere.
+
+Because the library is shared it may hold papers unrelated to this project.
+Filter by what you were asked about rather than assuming everything is
+relevant.
+
+## Ingestion runs in the background
+
+Extraction takes 1-2 minutes per paper, longer than a tool call should block.
+`paperfetch_fetch` returns a job id immediately; tell the user it started and
+poll `paperfetch_jobs` rather than waiting. Use the CLI for large batches.
+
 ## Workflow
 
 1. `paperfetch_search` to find candidates, then `paperfetch_fetch` the chosen URLs.
