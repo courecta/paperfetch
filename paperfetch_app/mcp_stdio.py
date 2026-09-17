@@ -128,6 +128,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "keys": {"type": "array", "items": {"type": "string"}, "default": None},
+                "key": {"type": "string", "description": "Single key; alias for keys"},
                 "all": {"type": "boolean", "default": False},
             },
             "required": [],
@@ -330,10 +331,17 @@ def _handle_tool(library_dir: Path, marker_venv: Path, name: str, arguments: dic
     if name == "paperfetch_export":
         idx = locked_load_index(library_dir)
         keys: set[str] = set(arguments.get("keys") or [])
+        # Every other tool takes a singular "key"; accept it here too rather
+        # than making callers remember which one is plural.
+        if arguments.get("key"):
+            keys.add(str(arguments["key"]))
         if arguments.get("all"):
             keys.update(idx.keys())
         if not keys:
-            raise PaperfetchError("No keys specified")
+            raise PaperfetchError(
+                "No keys specified",
+                hint='Pass {"keys": ["<key>"]}, {"key": "<key>"}, or {"all": true}.',
+            )
         entries = [idx[key] for key in keys if key in idx]
         if not entries:
             raise PaperfetchError("No matching entries")
