@@ -31,6 +31,7 @@ RETRIABLE_EXCEPTIONS = (
     requests.exceptions.ChunkedEncodingError,
 )
 MAX_RETRY_AFTER = 60.0
+REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
 
 
 @dataclass(frozen=True)
@@ -223,7 +224,7 @@ class HttpClient:
         timeout: float | None = None,
         retries: int | None = None,
         backoff: float | None = None,
-        check_url: bool = False,
+        check_url: bool = True,
     ) -> requests.Response:
         if check_url:
             self.assert_safe_url(url)
@@ -245,9 +246,23 @@ class HttpClient:
                     headers=request_headers or None,
                     params=dict(params) if params else None,
                     stream=stream,
-                    allow_redirects=allow_redirects,
+                    # Redirects are followed by hand so that each hop is
+                    # rate-limited against the host that actually serves it,
+                    # and so credentials are not carried to a new host --
+                    # requests strips Authorization across hosts but not
+                    # custom headers like x-api-key.
+                    allow_redirects=False,
                     timeout=timeout_val,
                 )
+                if allow_redirects:
+                    response = self._follow_redirects(
+                        response,
+                        method=method,
+                        headers=headers,
+                        stream=stream,
+                        timeout=timeout_val,
+                        check_url=check_url,
+                    )
             except RETRIABLE_EXCEPTIONS as exc:
                 last_error = exc
                 if attempt >= attempts:
@@ -275,6 +290,46 @@ class HttpClient:
             return response
 
         raise NetworkError(f"{method} {url} failed: {last_error}")
+
+    def _follow_redirects(
+        self,
+        response: requests.Response,
+        *,
+        method: str,
+        headers: Mapping[str, str] | None,
+        stream: bool,
+        timeout: float | None,
+        check_url: bool,
+        max_hops: int = 10,
+    ) -> requests.Response:
+        """Walk redirects manually, re-deciding host policy at every hop."""
+        hops = 0
+        while response.status_code in REDIRECT_STATUS and hops < max_hops:
+            target = (response.headers or {}).get("Location")
+            if not target:
+                break
+            target = requests.compat.urljoin(response.url, target)
+            hop_host = urlparse(target).hostname or ""
+            if check_url:
+                self.assert_safe_url(target)
+            response.close()
+
+            # Credentials and throttling both follow the new host, not the
+            # original one: a DOI redirecting to a publisher must be paced
+            # against the publisher.
+            hop_headers = dict(headers) if headers else {}
+            hop_headers.update(_auth_headers(hop_host))
+            self._bucket_for(hop_host).acquire()
+            response = self.session.request(
+                method,
+                target,
+                headers=hop_headers or None,
+                stream=stream,
+                allow_redirects=False,
+                timeout=timeout,
+            )
+            hops += 1
+        return response
 
     @staticmethod
     def _sleep_backoff(base: float, attempt: int) -> None:
@@ -412,6 +467,3 @@ class HttpClient:
             response.close()
 
 
-def default_client(**kwargs: Any) -> HttpClient:
-    """Deprecated alias; HttpClient authenticates Semantic Scholar by itself."""
-    return HttpClient(**kwargs)

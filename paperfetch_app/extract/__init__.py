@@ -1,4 +1,4 @@
-from .coverage import audit, ensure_coverage
+from .coverage import audit
 from .html_arxiv import LatexmlConverter, extract_arxiv_document, fetch_arxiv_html
 from .ir import (
     BibliographyEntry,
@@ -26,7 +26,6 @@ __all__ = [
     "SourceAnchor",
     "Table",
     "audit",
-    "ensure_coverage",
     "extract_arxiv_document",
     "fetch_arxiv_html",
     "render_markdown",

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
 import time
+import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,10 +36,6 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -47,10 +45,42 @@ def sha256_file(path: Path) -> str:
 
 
 def write_json_atomic(path: Path, payload: Any) -> None:
+    """Replace a JSON file atomically and durably.
+
+    The temp name is unique per write: a name derived only from the target
+    meant two processes writing the same file interleaved their bytes into one
+    temp file before either renamed, publishing a spliced document. Both the
+    file and its directory are fsynced, because a rename that reaches the
+    directory before the data does leaves a zero-length file after a crash --
+    which is how an index becomes unreadable.
+    """
     ensure_dir(path.parent)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    text = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        _fsync_dir(path.parent)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Persist a rename. Best effort: not every filesystem allows this."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def read_json(path: Path, default: Any = None) -> Any:
@@ -81,13 +111,3 @@ def retry_call(
             attempt += 1
 
 
-def check_markdown_quality(md_path: Path, min_chars: int, min_lines: int) -> tuple[bool, str]:
-    text = md_path.read_text(encoding="utf-8", errors="replace")
-    non_ws_chars = len("".join(text.split()))
-    line_count = len([line for line in text.splitlines() if line.strip()])
-
-    if non_ws_chars < min_chars:
-        return False, f"low markdown content: chars={non_ws_chars} < min={min_chars}"
-    if line_count < min_lines:
-        return False, f"low markdown content: lines={line_count} < min={min_lines}"
-    return True, "ok"

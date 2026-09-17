@@ -100,16 +100,6 @@ def promote(staging: Path, final: Path) -> None:
         shutil.rmtree(backup, ignore_errors=True)
 
 
-def list_bundle_dirs(library_dir: Path) -> list[Path]:
-    if not library_dir.exists():
-        return []
-    result = []
-    for child in sorted(library_dir.iterdir()):
-        if child.is_dir() and not child.name.startswith(".") and (child / "meta.json").exists():
-            result.append(child)
-    return result
-
-
 def load_bundle_meta(root: Path) -> dict[str, Any]:
     payload = read_json(root / "meta.json", default=None)
     return payload if isinstance(payload, dict) else {}

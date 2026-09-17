@@ -26,15 +26,33 @@ def _pdf_candidates_from_value(kind: str, host: str, value: str) -> tuple[str, l
             return landing, [f"https://{host}/{pdf}"]
         return f"https://{host}/{clean}.html", [f"https://{host}/{clean}.pdf"]
     if kind == "jmlr":
-        return f"https://jmlr.org/papers/{clean}.html", [f"https://jmlr.org/papers/{clean}.pdf"]
+        # The identity value already starts with "papers/"; prefixing it again
+        # produced .../papers/papers/... and every JMLR fetch 404'd.
+        stem = clean[len("papers/") :] if clean.startswith("papers/") else clean
+        return (
+            f"https://jmlr.org/papers/{stem}.html",
+            [f"https://jmlr.org/papers/{stem}.pdf", f"https://www.jmlr.org/papers/{stem}.pdf"],
+        )
     if kind == "neurips":
-        return f"https://proceedings.neurips.cc/{clean}.html", [f"https://proceedings.neurips.cc/{clean}.pdf"]
+        # Abstract pages live under /hash/<id>-Abstract.html but the PDF is
+        # served from /file/<id>-Paper.pdf.
+        paper = clean.replace("/hash/", "/file/").replace("-Abstract", "-Paper")
+        return (
+            f"https://proceedings.neurips.cc/{clean}.html",
+            [
+                f"https://proceedings.neurips.cc/{paper}.pdf",
+                f"https://proceedings.neurips.cc/{clean}.pdf",
+            ],
+        )
     return f"https://{host}/{clean}", [f"https://{host}/{clean}.pdf"]
 
 
 def resolve_proceedings(identity: PaperIdentity, client: HttpClient) -> Resolution:
     host = urlparse(identity.normalized_url).hostname or ""
     landing, constructed_pdfs = _pdf_candidates_from_value(identity.kind, host, identity.value)
+    if identity.normalized_url.lower().endswith(".pdf") and identity.normalized_url not in constructed_pdfs:
+        # identity already resolved this correctly; prefer it over a guess.
+        constructed_pdfs.insert(0, identity.normalized_url)
     resolution = Resolution(identity=identity, landing_url=landing, metadata={})
 
     pdf_urls: list[str] = []

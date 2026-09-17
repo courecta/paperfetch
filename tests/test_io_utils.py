@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from paperfetch_app.io_utils import (
-    check_markdown_quality,
     ensure_dir,
     now_utc_iso,
     retry_call,
@@ -137,31 +136,3 @@ class TestRetryCall:
         with pytest.raises(ValueError):
             retry_call("test", action, retries=2, backoff_seconds=0.01, retriable_exceptions=(RuntimeError,))
 
-
-class TestCheckMarkdownQuality:
-    def test_good_quality(self, tmp_path: Path):
-        f = tmp_path / "good.md"
-        f.write_text("# Title\n\nThis is content.\n\nMore content here.\n")
-        ok, reason = check_markdown_quality(f, min_chars=10, min_lines=2)
-        assert ok
-        assert reason == "ok"
-
-    def test_too_few_chars(self, tmp_path: Path):
-        f = tmp_path / "short.md"
-        f.write_text("hi")
-        ok, reason = check_markdown_quality(f, min_chars=100, min_lines=1)
-        assert not ok
-        assert "chars" in reason
-
-    def test_too_few_lines(self, tmp_path: Path):
-        f = tmp_path / "few_lines.md"
-        f.write_text("a b c d e f g")
-        ok, reason = check_markdown_quality(f, min_chars=1, min_lines=10)
-        assert not ok
-        assert "lines" in reason
-
-    def test_empty_file(self, tmp_path: Path):
-        f = tmp_path / "empty.md"
-        f.write_text("")
-        ok, reason = check_markdown_quality(f, min_chars=1, min_lines=1)
-        assert not ok

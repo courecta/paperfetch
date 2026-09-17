@@ -263,11 +263,3 @@ def extract_with_marker(
     return MarkerResult(markdown_path=markdown_path, output_dir=markdown_path.parent)
 
 
-def require_marker_command(marker_venv: Path, allow_install: bool, verbose: bool) -> str:
-    cmd = ensure_marker_command(marker_venv, allow_install, verbose)
-    if cmd is None:
-        raise MarkerUnavailableError(
-            "marker is not installed and could not be installed automatically",
-            hint="Install marker-pdf (pip install marker-pdf) or pass --no-install-marker after installing it.",
-        )
-    return cmd

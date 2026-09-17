@@ -1,3 +1,3 @@
-from .http import DownloadResult, HttpClient, default_client
+from .http import DownloadResult, HttpClient
 
-__all__ = ["DownloadResult", "HttpClient", "default_client"]
+__all__ = ["DownloadResult", "HttpClient"]

@@ -465,18 +465,47 @@ def _index_markdown(conn: sqlite3.Connection, key: str, markdown: str) -> None:
     flush()
 
 
+def drop_paper(conn: sqlite3.Connection, key: str) -> None:
+    """Remove every row belonging to one paper."""
+    for table, column in (
+        ("papers", "key"),
+        ("authors", "paper_key"),
+        ("sections", "paper_key"),
+        ("blocks", "paper_key"),
+        ("figures", "paper_key"),
+        ("tables_index", "paper_key"),
+        ("equations", "paper_key"),
+        ("refs", "src_key"),
+        ("files", "paper_key"),
+        ("annotations", "paper_key"),
+        ("chunks_fts", "paper_key"),
+    ):
+        conn.execute(f"DELETE FROM {table} WHERE {column}=?", (key,))
+
+
 def rebuild(conn: sqlite3.Connection, library_dir: Path) -> dict[str, int]:
+    """Re-derive the database from the bundles on disk.
+
+    Rebuild used to only ever insert, so a paper deleted from disk kept its
+    rows forever: grep and list still returned it, and read then raised
+    NotFoundError for a paper the same API had just listed. Reindexing could
+    grow the database but never repair it.
+    """
     indexed = 0
+    on_disk: set[str] = set()
     for child in sorted(library_dir.iterdir()) if library_dir.exists() else []:
         if child.is_dir() and not child.name.startswith(".") and (child / "meta.json").exists():
+            on_disk.add(child.name)
             if index_bundle(conn, library_dir, child.name):
                 indexed += 1
-    legacy = load_index_or_empty(index_path(library_dir))
-    for key in legacy:
-        if not (library_dir / key).exists() and index_bundle(conn, library_dir, key):
-            indexed += 1
+
+    known = {str(row[0]) for row in conn.execute("SELECT key FROM papers").fetchall()}
+    stale = known - on_disk
+    for key in stale:
+        drop_paper(conn, key)
+
     conn.commit()
-    return {"indexed": indexed}
+    return {"indexed": indexed, "pruned": len(stale)}
 
 
 def fts_query(query: str) -> str:

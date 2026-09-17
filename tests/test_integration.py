@@ -39,9 +39,6 @@ def options(tmp_path: Path):
             download_backoff=1.0,
             marker_backoff=1.0,
             workers=1,
-            min_md_chars=1,
-            min_md_lines=1,
-            allow_low_quality_md=False,
             verbose=False,
             extractor="auto",
         )

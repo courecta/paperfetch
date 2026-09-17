@@ -8,7 +8,6 @@ from typing import Any
 
 from . import service
 from .bibtex import export_bibtex
-from .bundle import bundle_paths
 from .discover import format_discovered, search_semantic_scholar
 from .errors import PaperfetchError
 from .identity import build_identity
@@ -169,31 +168,6 @@ def _send_error(req_id: Any, code: int, message: str) -> None:
 
 def _text_content(text: str) -> dict[str, Any]:
     return {"type": "text", "text": text}
-
-
-def _window(text: str, offset: int, max_chars: int) -> str:
-    if max_chars <= 0:
-        max_chars = DEFAULT_MAX_CHARS
-    start = max(0, int(offset))
-    chunk = text[start : start + max_chars]
-    next_offset = start + len(chunk)
-    if next_offset < len(text):
-        chunk += f"\n\n[next_offset={next_offset} of {len(text)} chars]"
-    return chunk
-
-
-def _load_markdown(library_dir: Path, key: str) -> str | None:
-    idx = locked_load_index(library_dir)
-    entry = idx.get(key) or {}
-    md_rel = entry.get("md")
-    candidates: list[Path] = []
-    if isinstance(md_rel, str):
-        candidates.append(library_dir / md_rel)
-    candidates.append(bundle_paths(library_dir, key).markdown)
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate.read_text(encoding="utf-8", errors="replace")
-    return None
 
 
 def _figure_payload(library_dir: Path, key: str, figure_ref: str) -> list[dict[str, Any]]:

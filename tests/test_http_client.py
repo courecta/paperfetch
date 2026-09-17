@@ -153,3 +153,50 @@ class TestSemanticScholarAuth:
         monkeypatch.delenv("PAPERFETCH_S2_API_KEY", raising=False)
         monkeypatch.delenv("S2_API_KEY", raising=False)
         assert _auth_headers("api.semanticscholar.org") == {}
+
+
+class TestRedirectPolicy:
+    """Each hop re-decides credentials and throttling for its own host."""
+
+    def _redirecting_client(self, monkeypatch, hops):
+        from paperfetch_app.fetch.http import HttpClient
+
+        client = HttpClient(retries=0)
+        # These hosts are fictional; the SSRF guard's DNS check is not what
+        # these tests are about.
+        monkeypatch.setattr(client, "assert_safe_url", lambda url: None)
+        seen = []
+
+        def fake_request(method, url, **kwargs):
+            seen.append((url, dict(kwargs.get("headers") or {})))
+            if hops:
+                target = hops.pop(0)
+                return FakeResponse(302, headers={"Location": target}, url=url)
+            return FakeResponse(200, body=b"ok", url=url)
+
+        monkeypatch.setattr(client.session, "request", fake_request)
+        return client, seen
+
+    def test_api_key_is_not_carried_to_the_redirect_target(self, monkeypatch):
+        """requests strips Authorization across hosts, but not x-api-key."""
+        monkeypatch.setenv("PAPERFETCH_S2_API_KEY", "secret-key")
+        client, seen = self._redirecting_client(monkeypatch, ["https://cdn.elsewhere.example/p"])
+        client.get_text("https://api.semanticscholar.org/graph/v1/paper/x")
+
+        first_url, first_headers = seen[0]
+        last_url, last_headers = seen[-1]
+        assert first_headers.get("x-api-key") == "secret-key"
+        assert "cdn.elsewhere.example" in last_url
+        assert "x-api-key" not in last_headers
+
+    def test_redirect_target_gets_its_own_rate_limit_bucket(self, monkeypatch):
+        """A DOI redirecting to a publisher must be paced against the publisher."""
+        client, _ = self._redirecting_client(monkeypatch, ["https://publisher.example/article.pdf"])
+        client.get_text("https://doi.org/10.1/x")
+        assert "publisher.example" in client._buckets
+        assert "doi.org" in client._buckets
+
+    def test_redirect_chains_are_bounded(self, monkeypatch):
+        client, seen = self._redirecting_client(monkeypatch, [f"https://h{i}.example/x" for i in range(40)])
+        client.get_text("https://start.example/x")
+        assert len(seen) <= 12

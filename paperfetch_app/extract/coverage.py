@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..errors import CoverageError
 from .ir import Document
 
 DEFAULT_MIN_RATIO = 0.95
@@ -89,11 +88,3 @@ def audit(document: Document, *, min_ratio: float = DEFAULT_MIN_RATIO) -> dict[s
     return report
 
 
-def ensure_coverage(document: Document, *, min_ratio: float = DEFAULT_MIN_RATIO) -> dict[str, Any]:
-    report = audit(document, min_ratio=min_ratio)
-    if report["ok"]:
-        return report
-    reason = report.get("reason") or "coverage below threshold"
-    details = ", ".join(f"{item.get('kind')} x{item.get('missing', 1)}" for item in report["unmapped"][:6])
-    message = f"{reason} ({details})" if details else reason
-    raise CoverageError(message, report=report)

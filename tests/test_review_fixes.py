@@ -150,3 +150,100 @@ class TestManifestTitles:
         entry = _coerce_paper_dict({"url": "https://arxiv.org/abs/2411.00278", "title": None}, "test")
         assert entry is not None
         assert entry.title != "None" and entry.slug != "none"
+
+
+class TestRebuildPrunes:
+    def test_deleted_bundle_is_removed_from_the_database(self, tmp_path: Path):
+        """grep used to keep returning papers that read then 404'd on."""
+        import shutil
+
+        from paperfetch_app import db as db_module
+        from paperfetch_app import service
+        from tests.test_service_db import _make_bundle
+
+        _make_bundle(tmp_path)
+        conn = service.connect(tmp_path)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 1
+            assert db_module.search(conn, "anomaly")
+
+            shutil.rmtree(tmp_path / "abc123")
+            result = db_module.rebuild(conn, tmp_path)
+
+            assert result["pruned"] == 1
+            assert conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0] == 0
+            assert db_module.search(conn, "anomaly") == []
+            assert conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0] == 0
+        finally:
+            conn.close()
+
+
+class TestSsrfGuard:
+    @pytest.mark.parametrize(
+        "url",
+        ["http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:8080/x", "http://localhost/x"],
+    )
+    def test_private_addresses_are_refused(self, url):
+        """check_url defaulted to False, so nothing was ever checked."""
+        from paperfetch_app.errors import UnsafeUrlError
+        from paperfetch_app.fetch.http import HttpClient
+
+        client = HttpClient(retries=0)
+        try:
+            with pytest.raises(UnsafeUrlError):
+                client.get_text(url)
+        finally:
+            client.close()
+
+
+class TestProceedingsUrls:
+    def test_jmlr_path_is_not_doubled(self):
+        """The identity value already starts with papers/."""
+        from urllib.parse import urlparse
+
+        from paperfetch_app.identity import build_identity
+        from paperfetch_app.resolve.proceedings import _pdf_candidates_from_value
+
+        identity = build_identity("https://www.jmlr.org/papers/v20/18-598.html")
+        host = urlparse(identity.normalized_url).hostname or ""
+        landing, pdfs = _pdf_candidates_from_value(identity.kind, host, identity.value)
+        assert "papers/papers" not in landing
+        assert all("papers/papers" not in url for url in pdfs)
+        assert any(url.endswith("/papers/v20/18-598.pdf") for url in pdfs)
+
+    def test_neurips_pdf_uses_the_file_path(self):
+        from paperfetch_app.resolve.proceedings import _pdf_candidates_from_value
+
+        _, pdfs = _pdf_candidates_from_value(
+            "neurips", "proceedings.neurips.cc", "paper/2020/hash/abc-Abstract"
+        )
+        # Abstract pages live under /hash/; the PDF is served from /file/.
+        assert pdfs[0].endswith("/paper/2020/file/abc-Paper.pdf")
+
+
+class TestAtomicWrites:
+    def test_concurrent_writers_do_not_splice(self, tmp_path: Path):
+        """One temp name per target let two writers interleave into it."""
+        import threading
+
+        from paperfetch_app.io_utils import read_json, write_json_atomic
+
+        target = tmp_path / "index.json"
+        errors: list[Exception] = []
+
+        def writer(tag: str) -> None:
+            try:
+                for i in range(40):
+                    write_json_atomic(target, {tag: [tag] * 200, "i": i})
+            except Exception as exc:  # pragma: no cover - failure detail
+                errors.append(exc)
+
+        threads = [threading.Thread(target=writer, args=(t,)) for t in ("aaa", "bbb", "ccc")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        assert isinstance(read_json(target), dict)
+        assert not list(tmp_path.glob("*.tmp"))

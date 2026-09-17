@@ -47,9 +47,6 @@ class FetchOptions:
     download_backoff: float = 1.5
     marker_backoff: float = 2.0
     workers: int = 4
-    min_md_chars: int = 300
-    min_md_lines: int = 8
-    allow_low_quality_md: bool = False
     verbose: bool = False
     extractor: str = "auto"  # auto | arxiv_html | marker
     min_coverage: float = 0.95
