@@ -289,8 +289,14 @@ def _write_project_files(final: BundlePaths, slug: str, options: FetchOptions) -
     if wants_figures and final.figures_dir.exists():
         if figures_target.exists() and options.overwrite:
             shutil.rmtree(figures_target, ignore_errors=True)
-        if not figures_target.exists():
-            shutil.copytree(final.figures_dir, figures_target)
+        # Per-file materialize rather than copytree: figures are the bulk of a
+        # bundle, so copying them into every project defeats the point of a
+        # shared library.
+        for source in sorted(final.figures_dir.rglob("*")):
+            if not source.is_file():
+                continue
+            destination = figures_target / source.relative_to(final.figures_dir)
+            materialize(source, destination, mode=options.link_mode, overwrite=options.overwrite)
 
     if wants_md and final.markdown.exists():
         text = final.markdown.read_text(encoding="utf-8", errors="replace")
@@ -331,6 +337,10 @@ def process_one(
         from .io_utils import read_json
 
         meta = read_json(final.meta, default={}) or {}
+        # A cached paper still has to appear in this project: the whole point
+        # of a shared library is that the second project links to the bundle
+        # instead of re-extracting it.
+        _write_project_files(final, chosen_slug, options)
         return ProcessResult(
             success=True,
             paper=paper,
@@ -349,6 +359,7 @@ def process_one(
                     from .io_utils import read_json
 
                     meta = read_json(final.meta, default={}) or {}
+                    _write_project_files(final, chosen_slug, options)
                     return ProcessResult(
                         success=True,
                         paper=paper,

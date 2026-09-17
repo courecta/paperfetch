@@ -135,3 +135,55 @@ class TestSlugs:
 
         assert must_contain in safe_slug(identity_value)
         assert must_contain not in Path(identity_value).stem
+
+
+class TestSharedLibrary:
+    """A second project must link to a cached bundle, not re-extract it."""
+
+    def _bundle(self, library: Path, key: str) -> None:
+        from paperfetch_app.bundle import bundle_paths
+        from paperfetch_app.io_utils import write_json_atomic
+
+        paths = bundle_paths(library, key)
+        paths.root.mkdir(parents=True, exist_ok=True)
+        paths.figures_dir.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(paths.meta, {"title": "Cached", "key": key, "coverage": {"ok": True}})
+        paths.markdown.write_text("# Cached\n\n![f](figures/a.png)\n", encoding="utf-8")
+        paths.pdf.write_bytes(b"%PDF-1.4 fake")
+        (paths.figures_dir / "a.png").write_bytes(b"PNG")
+
+    def test_cached_paper_still_materializes_into_the_project(self, options, tmp_path: Path):
+        library, out = tmp_path / "lib", tmp_path / "proj"
+        from paperfetch_app.identity import build_identity
+
+        url = "https://arxiv.org/abs/2401.00001"
+        self._bundle(library, build_identity(url).key)
+
+        result = process_one(
+            paper(url, slug="cached", title="Cached"),
+            options(dry_run=False, library_dir=library, out_dir=out, project_files="both"),
+            None,
+            {},
+        )
+        assert result.success
+        # Before this, an already-cached paper produced nothing in the project.
+        assert (out / "cached.md").is_file()
+        assert (out / "cached.pdf").is_file()
+        assert (out / "cached-figures" / "a.png").is_file()
+
+    def test_figures_honour_the_link_mode(self, options, tmp_path: Path):
+        library, out = tmp_path / "lib", tmp_path / "proj"
+        from paperfetch_app.identity import build_identity
+
+        url = "https://arxiv.org/abs/2401.00002"
+        self._bundle(library, build_identity(url).key)
+        process_one(
+            paper(url, slug="linked", title="Linked"),
+            options(dry_run=False, library_dir=library, out_dir=out, project_files="both", link_mode="hardlink"),
+            None,
+            {},
+        )
+        # copytree would have produced an independent copy; figures are the
+        # bulk of a bundle, so they must share the inode.
+        figure = out / "linked-figures" / "a.png"
+        assert figure.stat().st_nlink > 1
