@@ -120,6 +120,7 @@ def clean_library(
     remove_orphans: bool,
 ) -> dict[str, int]:
     removed_index_entries = 0
+    unindexed: list[str] = []
     removed_orphans = 0
 
     active_rel: set[str] = set()
@@ -172,25 +173,27 @@ def clean_library(
                     path.unlink(missing_ok=True)
                     removed_orphans += 1
 
-        known_keys = set(index.keys())
-        # An empty index beside bundles on disk means the index was lost, not
-        # that every bundle is an orphan. Deleting here would destroy the
-        # library, which is unrecoverable; refuse instead.
-        if not known_keys and any((c / "meta.json").exists() for c in library_dir.iterdir() if c.is_dir()):
-            raise PaperfetchError(
-                "Refusing to remove orphans: the index is empty but bundles exist on disk",
-                hint="Run 'paperfetch reindex' to rebuild the index from the bundles first.",
-            )
+        # The bundles on disk are the library; index.json is a derived view of
+        # them. So a directory holding a readable meta.json is never an orphan,
+        # however stale or damaged the index is -- it is an *unindexed* bundle,
+        # and the repair is to index it, not to delete it. Treating "absent
+        # from the index" as "delete" meant a truncated index destroyed the
+        # library, and a partially written one destroyed part of it.
         for child in library_dir.iterdir():
             if not child.is_dir() or child.name.startswith("."):
                 continue
-            if child.name in {"pdfs", "md", "meta", "locks", "converted"}:
+            if child.name in {"pdfs", "md", "meta", "locks", "converted", "jobs"}:
                 continue
-            if child.name not in known_keys and (child / "meta.json").exists():
-                shutil.rmtree(child, ignore_errors=True)
-                removed_orphans += 1
+            if (child / "meta.json").is_file():
+                if child.name not in index:
+                    unindexed.append(child.name)
+                continue
+            # No meta.json: a partial or abandoned directory, safe to remove.
+            shutil.rmtree(child, ignore_errors=True)
+            removed_orphans += 1
 
     return {
         "removed_index_entries": removed_index_entries,
         "removed_orphans": removed_orphans,
+        "unindexed_bundles": unindexed,
     }

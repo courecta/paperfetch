@@ -203,4 +203,4 @@ class TestCleanLibrary:
         (tmp_path / "md" / "a.md").write_text("md")
 
         result = clean_library(tmp_path, idx, prune_missing_entries=False, remove_orphans=False)
-        assert result == {"removed_index_entries": 0, "removed_orphans": 0}
+        assert result == {"removed_index_entries": 0, "removed_orphans": 0, "unindexed_bundles": []}

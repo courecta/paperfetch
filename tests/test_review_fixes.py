@@ -12,16 +12,31 @@ from paperfetch_app.storage import IndexUnreadableError, clean_library
 
 
 class TestCleanCannotDestroyTheLibrary:
-    def test_refuses_to_remove_orphans_when_the_index_is_empty(self, tmp_path: Path):
-        """A lost index made every bundle look like an orphan."""
+    @pytest.mark.parametrize("index", [{}, {"aaa": {}}], ids=["index-lost", "index-partial"])
+    def test_a_real_bundle_is_never_an_orphan(self, tmp_path: Path, index):
+        """Disk is the library; index.json is a derived view of it.
+
+        A truncated index destroyed the whole library and a partially written
+        one destroyed part of it, because "absent from the index" meant delete.
+        """
         for key in ("aaa", "bbb"):
             (tmp_path / key).mkdir()
             (tmp_path / key / "meta.json").write_text("{}")
 
-        with pytest.raises(PaperfetchError, match="Refusing to remove orphans"):
-            clean_library(tmp_path, {}, prune_missing_entries=False, remove_orphans=True)
+        result = clean_library(tmp_path, index, prune_missing_entries=False, remove_orphans=True)
         assert (tmp_path / "aaa" / "meta.json").exists()
         assert (tmp_path / "bbb" / "meta.json").exists()
+        assert result["removed_orphans"] == 0
+        # They are reported for reindexing rather than deleted.
+        assert "bbb" in result["unindexed_bundles"]
+
+    def test_a_directory_with_no_meta_is_still_removed(self, tmp_path: Path):
+        junk = tmp_path / "abandoned"
+        junk.mkdir()
+        (junk / "partial.tmp").write_text("x")
+        result = clean_library(tmp_path, {}, prune_missing_entries=False, remove_orphans=True)
+        assert not junk.exists()
+        assert result["removed_orphans"] == 1
 
     def test_unreadable_index_raises_before_anything_is_deleted(self, tmp_path: Path):
         from paperfetch_app.storage import load_index
