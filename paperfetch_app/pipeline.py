@@ -461,6 +461,13 @@ def process_one(
                         except Exception as exc:
                             resolution.notes.append(f"PDF retry failed: {exc}")
                             document, markdown_text, used_extractor, asset_report, coverage_report = html_attempt
+                            # _reset_dir may already have wiped the HTML
+                            # attempt's images; without this the markdown links
+                            # point at files that no longer exist.
+                            if options.download_figures:
+                                assets_module.ingest_figure_assets(
+                                    document, staging, client, max_bytes=options.max_asset_bytes
+                                )
 
                 else:
                     coverage_report = audit(document, min_ratio=options.min_coverage)
@@ -476,8 +483,17 @@ def process_one(
 
                 visual_report: dict[str, Any] = {"available": False, "reason": "disabled"}
                 if options.pdf_visual and staging.pdf.exists():
-                    visual_report = render_pdf_visuals(document, staging.pdf, staging)
-                    _apply_visuals(document, visual_report)
+                    try:
+                        visual_report = render_pdf_visuals(
+                            document, staging.pdf, staging, page_images=options.page_images
+                        )
+                        _apply_visuals(document, visual_report)
+                    except Exception as exc:
+                        # Crops are decorative; losing minutes of extraction
+                        # because one page failed to rasterize is not a trade
+                        # worth making.
+                        visual_report = {"available": False, "reason": f"visual rendering failed: {exc}"}
+                        resolution.notes.append(visual_report["reason"])
                     assets_module.write_figure_manifest(document, staging)
 
                 if markdown_text is None:

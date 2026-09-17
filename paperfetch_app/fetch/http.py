@@ -283,10 +283,23 @@ class HttpClient:
         window = base * (2**attempt)
         time.sleep(random.uniform(0.0, min(window, 30.0)))
 
+    @staticmethod
+    def _check_status(response: requests.Response, url: str) -> None:
+        """Raise a DownloadError, not requests.HTTPError.
+
+        Non-retriable statuses (404/403/401) come back as a normal response, so
+        raise_for_status would raise requests.HTTPError -- outside the
+        PaperfetchError hierarchy, which made every `except PaperfetchError`
+        guard in the resolvers dead code: one 404 from Crossref aborted the
+        whole DOI resolution chain instead of falling through to OpenAlex.
+        """
+        if response.status_code >= 400:
+            raise DownloadError(f"GET {url} failed with HTTP {response.status_code}")
+
     def get_text(self, url: str, **kwargs: Any) -> str:
         response = self.request("GET", url, **kwargs)
         try:
-            response.raise_for_status()
+            self._check_status(response, url)
             return response.text
         finally:
             response.close()
@@ -294,15 +307,19 @@ class HttpClient:
     def get_json(self, url: str, **kwargs: Any) -> Any:
         response = self.request("GET", url, **kwargs)
         try:
-            response.raise_for_status()
-            return response.json()
+            self._check_status(response, url)
+            try:
+                return response.json()
+            except ValueError as exc:
+                # An HTML interstitial served with HTTP 200 is common.
+                raise DownloadError(f"GET {url} returned a non-JSON body: {exc}") from exc
         finally:
             response.close()
 
     def get_bytes(self, url: str, *, limit: int | None = None, **kwargs: Any) -> bytes:
         response = self.request("GET", url, **kwargs)
         try:
-            response.raise_for_status()
+            self._check_status(response, url)
             chunks: list[bytes] = []
             total = 0
             for chunk in response.iter_content(chunk_size=256 * 1024):

@@ -89,9 +89,14 @@ class TestFailureHandling:
         assert len(results) == len(papers)
         assert all(not r.success and r.error for r in results)
 
-    def test_unreadable_index_does_not_crash_the_run(self, options, tmp_path: Path):
+    def test_unreadable_index_is_reported_not_ignored(self, options, tmp_path: Path):
+        from paperfetch_app.storage import IndexUnreadableError
+
         (tmp_path / "index.json").write_text("{not json")
-        assert load_index(tmp_path / "index.json") == {}
+        # Silently reading it as empty is what let clean delete a library.
+        with pytest.raises(IndexUnreadableError):
+            load_index(tmp_path / "index.json")
+        # A fetch given an explicit snapshot is unaffected.
         assert process_one(paper("https://arxiv.org/abs/2401.00001"), options(), None, {}).success
 
 

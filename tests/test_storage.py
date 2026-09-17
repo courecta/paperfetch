@@ -34,11 +34,20 @@ class TestLoadIndex:
         result = load_index(f)
         assert result == {"key1": {"title": "Paper 1"}}
 
-    def test_invalid_json(self, tmp_path: Path):
+    def test_invalid_json_raises_rather_than_reading_as_empty(self, tmp_path: Path):
+        """An unreadable index must not look like an empty library.
+
+        clean --remove-orphans deletes every bundle not named in the index, so
+        a corrupt index silently reading as {} would delete the whole library.
+        """
+        from paperfetch_app.storage import IndexUnreadableError, load_index_or_empty
+
         f = tmp_path / "index.json"
         f.write_text("not json")
-        result = load_index(f)
-        assert result == {}
+        with pytest.raises(IndexUnreadableError):
+            load_index(f)
+        # Read-only callers can still opt into the tolerant behaviour.
+        assert load_index_or_empty(f) == {}
 
     def test_non_dict_json(self, tmp_path: Path):
         f = tmp_path / "index.json"

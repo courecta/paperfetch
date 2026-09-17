@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from paperfetch_app import service
 from paperfetch_app.bundle import bundle_paths
 from paperfetch_app.extract.ir import Block, Cell, Document, Figure, ImageRef, Inline, Table
@@ -161,16 +163,30 @@ class TestFtsQuoting:
         assert fts_query("zero-shot") == '"zero-shot"'
         assert fts_query("few-shot anomaly") == '"few-shot" "anomaly"'
 
-    def test_explicit_operators_are_respected(self):
+    def test_operators_are_honoured_but_terms_are_still_quoted(self):
+        """Passing the whole string through was how `NOT rnn-based` crashed."""
         from paperfetch_app.db import fts_query
 
-        assert fts_query("anomaly AND detection") == "anomaly AND detection"
-        assert fts_query('"exact phrase"') == '"exact phrase"'
+        assert fts_query("anomaly AND detection") == '"anomaly" AND "detection"'
+        assert fts_query("attention NOT rnn-based") == '"attention" NOT "rnn-based"'
 
-    def test_embedded_quotes_are_escaped(self):
+    @pytest.mark.parametrize(
+        "query",
+        ["zero-shot", "attention NOT rnn-based", 'he said "unbalanced', "a*b", "NEAR stuff", "trailing-"],
+    )
+    def test_no_query_reaches_sqlite_unescaped(self, query):
+        """Every one of these raised OperationalError before quoting."""
+        import sqlite3
+
         from paperfetch_app.db import fts_query
 
-        assert fts_query('say"hi') == 'say"hi'  # already quoted -> passed through
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE VIRTUAL TABLE t USING fts5(body, tokenize='unicode61')")
+        conn.execute("INSERT INTO t VALUES ('zero-shot anomaly detection')")
+        try:
+            conn.execute("SELECT * FROM t WHERE t MATCH ?", (fts_query(query),)).fetchall()
+        finally:
+            conn.close()
 
     def test_empty_query_does_not_produce_invalid_sql(self):
         from paperfetch_app.db import fts_query

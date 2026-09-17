@@ -31,7 +31,9 @@ def _to_discovered(raw: dict[str, Any]) -> DiscoveredPaper | None:
     if not title:
         return None
 
-    authors = [a.get("name", "") for a in raw.get("authors", []) if a.get("name")]
+    # present-but-null is normal on bibliography-extracted S2 records,
+    # and .get(key, default) does not apply the default when the key exists.
+    authors = [a.get("name", "") for a in (raw.get("authors") or []) if a.get("name")]
     year = raw.get("year")
     abstract = raw.get("abstract")
     venue = raw.get("venue")

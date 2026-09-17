@@ -50,6 +50,9 @@ def audit(document: Document, *, min_ratio: float = DEFAULT_MIN_RATIO) -> dict[s
     content_chars = document.content_chars()
 
     report: dict[str, Any] = {
+        # Carried forward so audit() is idempotent: without it a re-audit loses
+        # the image accounting and a failing ratio silently becomes 1.0.
+        "assets": figure_assets,
         "source_counts": source,
         "mapped_counts": mapped,
         "unmapped": unmapped,

@@ -177,10 +177,14 @@ def install_mcp(
 
     config_path = _config_path(client, scope, project_dir)
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    if config_path.exists() and force:
-        config = {}
-    else:
+    try:
         config = _load_config(config_path)
+    except ValueError:
+        if not force:
+            raise
+        # --force exists to get past a malformed file, not to discard a valid
+        # one: ~/.claude.json holds every other server and project entry.
+        config = {}
 
     binary, *binary_args = _binary_command()
     args = [

@@ -106,7 +106,11 @@ def rank_by_frequency(groups: list[list[DiscoveredPaper]]) -> list[tuple[Discove
     counts: dict[str, int] = {}
     best: dict[str, DiscoveredPaper] = {}
     for group in groups:
-        for paper in {p.paper_id: p for p in group}.values():
+        # Records S2 extracted from a bibliography carry no paperId. Keying on
+        # "" would collapse them all into one entry whose count is the sum of
+        # unrelated papers, putting an arbitrary one at rank 1.
+        identified = {p.paper_id: p for p in group if p.paper_id}
+        for paper in identified.values():
             counts[paper.paper_id] = counts.get(paper.paper_id, 0) + 1
             best.setdefault(paper.paper_id, paper)
     ranked = [(best[pid], count) for pid, count in counts.items()]

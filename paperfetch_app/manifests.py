@@ -38,7 +38,9 @@ def _coerce_paper_dict(obj: dict[str, object], source: str) -> PaperInput | None
     if not isinstance(url, str) or not url.strip():
         return None
 
-    title_val = obj.get("title", obj.get("name", "paper"))
+    # csv.DictReader fills short rows with None, and JSON can carry null;
+    # .get(key, default) does not apply the default when the key exists.
+    title_val = obj.get("title") or obj.get("name") or "paper"
     if not isinstance(title_val, str):
         title_val = str(title_val)
 

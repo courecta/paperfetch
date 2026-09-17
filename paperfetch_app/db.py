@@ -8,7 +8,7 @@ from typing import Any
 
 from .bundle import bundle_paths, load_bundle_meta
 from .io_utils import now_utc_iso, read_json, safe_slug
-from .storage import index_path, load_index
+from .storage import index_path, load_index_or_empty
 
 SCHEMA_VERSION = 1
 
@@ -203,7 +203,7 @@ def index_bundle(conn: sqlite3.Connection, library_dir: Path, key: str) -> bool:
     paths = bundle_paths(library_dir, key)
     meta = load_bundle_meta(paths.root)
     if not meta:
-        legacy = load_index(index_path(library_dir)).get(key)
+        legacy = load_index_or_empty(index_path(library_dir)).get(key)
         if not legacy:
             return False
         meta = dict(legacy)
@@ -471,7 +471,7 @@ def rebuild(conn: sqlite3.Connection, library_dir: Path) -> dict[str, int]:
         if child.is_dir() and not child.name.startswith(".") and (child / "meta.json").exists():
             if index_bundle(conn, library_dir, child.name):
                 indexed += 1
-    legacy = load_index(index_path(library_dir))
+    legacy = load_index_or_empty(index_path(library_dir))
     for key in legacy:
         if not (library_dir / key).exists() and index_bundle(conn, library_dir, key):
             indexed += 1
@@ -491,10 +491,16 @@ def fts_query(query: str) -> str:
     stripped = query.strip()
     if not stripped:
         return '""'
-    # An already-quoted or operator-bearing query is taken at face value.
-    if '"' in stripped or any(op in stripped.split() for op in ("AND", "OR", "NOT", "NEAR")):
-        return stripped
+    # Operators are honoured, but every non-operator token is still quoted.
+    # Passing the whole string through when it contained NOT or a quote meant
+    # `attention NOT rnn-based` raised "no such column: based" and an odd
+    # number of quotes raised "unterminated string".
+    operators = {"AND", "OR", "NOT", "NEAR"}
     tokens = [token for token in re.split(r"\s+", stripped) if token]
+    if any(token in operators for token in tokens):
+        return " ".join(
+            token if token in operators else '"' + token.replace('"', "") + '"' for token in tokens
+        )
     return " ".join('"' + token.replace('"', '""') + '"' for token in tokens)
 
 
@@ -573,6 +579,24 @@ def _norm_label(value: Any) -> str:
     return re.sub(r"\s*:\s*$", "", str(value or "").strip()).lower()
 
 
+def _positional(rows: list[Any], needle: str) -> Any | None:
+    """Pick the Nth float in document order.
+
+    The caller's query has no ORDER BY, so SQLite returns rows keyed by
+    (paper_key, id) -- lexicographic, which puts fig-10 before fig-2. Asking
+    for "Figure 2" then returned figure 10's caption and image.
+    """
+    if not needle.isdigit() or not rows:
+        return None
+    ordered = sorted(rows, key=lambda r: _natural_key(str(r["id"])))
+    index = int(needle) - 1
+    return ordered[index] if 0 <= index < len(ordered) else None
+
+
+def _natural_key(value: str) -> list[Any]:
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", value)]
+
+
 def get_figure(conn: sqlite3.Connection, key: str, figure_ref: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM figures WHERE paper_key=?", (key,)).fetchall()
     needle = _norm_label(figure_ref)
@@ -594,11 +618,8 @@ def get_table(conn: sqlite3.Connection, key: str, table_ref: str) -> dict[str, A
         candidate = dict(item)
         if needle in {_norm_label(candidate.get("id")), _norm_label(candidate.get("label"))}:
             return candidate
-    if needle.isdigit() and rows:
-        index = int(needle) - 1
-        if 0 <= index < len(rows):
-            return dict(rows[index])
-    return None
+    match = _positional(rows, needle)
+    return dict(match) if match is not None else None
 
 
 def add_annotation(conn: sqlite3.Connection, key: str, quote: str, note: str) -> int:

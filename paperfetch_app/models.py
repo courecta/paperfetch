@@ -56,6 +56,8 @@ class FetchOptions:
     allow_incomplete: bool = False
     download_figures: bool = True
     pdf_visual: bool = True
+    # Full-page renders are large and nothing reads them; opt in explicitly.
+    page_images: bool = False
     max_asset_bytes: int = 25 * 1024 * 1024
     marker_venv: Path | None = None
     install_marker: bool = True

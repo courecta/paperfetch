@@ -106,7 +106,8 @@ def get_host_rps(host: str) -> float:
     base = get_default_rps()
     for suffix, rate in HOST_RPS.items():
         if host == suffix or host.endswith("." + suffix):
-            return min(base, rate) if base else rate
+            # `if base` would treat a deliberate 0 rps as unset.
+            return min(base, rate) if base is not None else rate
     return base
 
 

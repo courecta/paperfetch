@@ -3,11 +3,17 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
+from .errors import PaperfetchError
 from .io_utils import ensure_dir, write_json_atomic
 from .models import StorePaths
+
+# An ingest can hold a staging tree for a long marker run; only reap scratch
+# older than this.
+STALE_SCRATCH_SECONDS = 6 * 60 * 60
 
 INDEX_FILENAME = "index.json"
 
@@ -25,13 +31,34 @@ def ensure_library_paths(library_dir: Path, canonical_base: str) -> StorePaths:
     )
 
 
+class IndexUnreadableError(PaperfetchError):
+    """index.json exists but could not be parsed."""
+
+
+def load_index_or_empty(path: Path) -> dict[str, dict[str, Any]]:
+    """Read the index, treating an unreadable file as empty.
+
+    Only for read-only callers (listing, lookups). Anything that deletes must
+    use load_index and let the error surface.
+    """
+    try:
+        return load_index(path)
+    except IndexUnreadableError:
+        return {}
+
+
 def load_index(path: Path) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        # An unreadable index is not an empty one. Callers that delete things
+        # must be able to tell the difference, so record it on the result.
+        raise IndexUnreadableError(
+            f"Could not read the library index at {path}: {exc}",
+            hint="Repair or delete index.json, then run 'paperfetch reindex' to rebuild it from the bundles.",
+        ) from exc
     if not isinstance(raw, dict):
         return {}
     out: dict[str, dict[str, Any]] = {}
@@ -115,10 +142,20 @@ def clean_library(
         index.pop(key, None)
         removed_index_entries += 1
 
+    # .staging holds in-flight extractions and .trash holds promote rollbacks;
+    # both belong to a running ingest, which clean does not coordinate with.
+    # Only remove entries old enough that no ingest could still own them.
     for sub in (".staging", ".trash"):
-        staging = library_dir / sub
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
+        scratch = library_dir / sub
+        if not scratch.exists():
+            continue
+        cutoff = time.time() - STALE_SCRATCH_SECONDS
+        for child in scratch.iterdir():
+            try:
+                if child.stat().st_mtime < cutoff:
+                    shutil.rmtree(child, ignore_errors=True) if child.is_dir() else child.unlink(missing_ok=True)
+            except OSError:
+                continue
 
     if remove_orphans:
         scan_dirs = [library_dir / "pdfs", library_dir / "md", library_dir / "meta"]
@@ -136,6 +173,14 @@ def clean_library(
                     removed_orphans += 1
 
         known_keys = set(index.keys())
+        # An empty index beside bundles on disk means the index was lost, not
+        # that every bundle is an orphan. Deleting here would destroy the
+        # library, which is unrecoverable; refuse instead.
+        if not known_keys and any((c / "meta.json").exists() for c in library_dir.iterdir() if c.is_dir()):
+            raise PaperfetchError(
+                "Refusing to remove orphans: the index is empty but bundles exist on disk",
+                hint="Run 'paperfetch reindex' to rebuild the index from the bundles first.",
+            )
         for child in library_dir.iterdir():
             if not child.is_dir() or child.name.startswith("."):
                 continue

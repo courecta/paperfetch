@@ -8,12 +8,18 @@ from pathlib import Path
 from .bibtex import export_bibtex
 from .config import VERSION, get_default_library_dir, get_default_marker_venv
 from .discover import format_discovered, search_semantic_scholar
+from .errors import PaperfetchError
 from .identity import build_identity
 from .io_utils import ensure_dir, read_json
 from .locking import file_lock
 from .manifests import collect_inputs, init_manifest
 from .models import FetchOptions
 from .pipeline import reextract_keys, run_fetch
+
+# runtime's versions also refresh library.sqlite3; the CLI previously had
+# private copies that did not, leaving the search index stale.
+from .runtime import locked_load_index as _load_index_with_lock
+from .runtime import locked_merge_index as _save_index_with_lock
 from .storage import clean_library, index_path, list_entries, load_index, save_index
 
 try:
@@ -272,20 +278,6 @@ def _to_fetch_options(args: argparse.Namespace) -> FetchOptions:
     )
 
 
-def _load_index_with_lock(library_dir: Path) -> dict[str, dict]:
-    idx = index_path(library_dir)
-    lock = library_dir / "index.lock"
-    with file_lock(lock, timeout_sec=120.0):
-        return load_index(idx)
-
-
-def _save_index_with_lock(library_dir: Path, updated_index: dict[str, dict]) -> None:
-    idx = index_path(library_dir)
-    lock = library_dir / "index.lock"
-    with file_lock(lock, timeout_sec=120.0):
-        current = load_index(idx)
-        current.update(updated_index)
-        save_index(idx, current)
 
 
 def _run_fetch(args: argparse.Namespace) -> int:
@@ -493,7 +485,7 @@ def _run_discover(args: argparse.Namespace) -> int:
             open_access_only=args.open_access,
             venue=args.venue,
         )
-    except RuntimeError as exc:
+    except PaperfetchError as exc:
         err = str(exc)
         if "429" in err:
             print("Semantic Scholar rate limit exceeded. Set S2_API_KEY or wait and retry.")
@@ -567,7 +559,6 @@ def _run_install_mcp(args: argparse.Namespace) -> int:
 
 def _run_citations(args: argparse.Namespace) -> int:
     from .citations import rank_by_frequency, related_papers
-    from .errors import PaperfetchError
     from .fetch.http import HttpClient
 
     library_dir = args.library_dir.expanduser().resolve()
@@ -582,7 +573,7 @@ def _run_citations(args: argparse.Namespace) -> int:
             if entry is None:
                 print(f"Unknown key: {key}")
                 return 1
-            seeds.append((key, entry.get("url") or ""))
+            seeds.append((key, entry.get("source_url") or entry.get("url") or ""))
         seeds.extend((build_identity(url).key, url) for url in args.url)
 
     seeds = [(key, url) for key, url in seeds if url]
@@ -621,7 +612,8 @@ def _run_citations(args: argparse.Namespace) -> int:
     unresolvable = [p for p, _ in ranked if not (p.arxiv_id or p.doi)]
     resolvable = [(p, c) for p, c in ranked if p.arxiv_id or p.doi]
 
-    known = {entry.get("url") for entry in index.values()}
+    # Entries record source_url; keying on "url" made this filter match nothing.
+    known = {u for e in index.values() if (u := e.get("source_url") or e.get("url"))}
     fresh = [(paper, count) for paper, count in resolvable if paper.url not in known]
 
     print(
@@ -664,13 +656,15 @@ def _run_refresh_metadata(args: argparse.Namespace) -> int:
 
     results = refresh_library(library_dir, keys, force=args.force)
 
+    updates: dict[str, dict] = {}
     updated = failed = skipped = 0
     for key, result in results:
         status = result["status"]
         title = (index.get(key, {}).get("title") or key)[:48]
         if status == "updated":
             updated += 1
-            index[key] = _entry_from_meta(result["meta"]) | {"key": key}
+            updates[key] = _entry_from_meta(result["meta"]) | {"key": key}
+            index[key] = updates[key]
             try:
                 index_key(library_dir, key)
             except Exception as exc:  # the bundle is still correct on disk
@@ -682,11 +676,11 @@ def _run_refresh_metadata(args: argparse.Namespace) -> int:
             failed += 1
             print(f"[fail] {title}: {result.get('reason')}", file=sys.stderr)
 
-    if updated:
-        _save_index_with_lock(library_dir, index)
+    if updates:
+        _save_index_with_lock(library_dir, updates)
     remaining = sum(1 for key in keys if needs_metadata(index.get(key, {})))
     print(f"updated={updated} skipped={skipped} failed={failed}; {remaining} still incomplete")
-    return 1 if failed and not updated else 0
+    return 1 if failed else 0
 
 
 def _run_zotero(args: argparse.Namespace) -> int:
@@ -797,7 +791,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"Unknown command: {args.command}")
         return 2
 
-    from .errors import PaperfetchError
 
     try:
         return handler(args)

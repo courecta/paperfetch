@@ -80,10 +80,12 @@ def _best_url(data: dict[str, Any]) -> str | None:
 
 
 def _collection_names(client: Any) -> dict[str, str]:
-    try:
-        return {c["key"]: c["data"]["name"] for c in client.everything(client.collections())}
-    except Exception:
-        return {}
+    """Map collection key -> name.
+
+    Errors propagate: swallowing a connection refusal here reported "no
+    collection named X" when the real problem was that Zotero was not running.
+    """
+    return {c["key"]: c["data"]["name"] for c in client.everything(client.collections())}
 
 
 def read_library(
@@ -98,9 +100,9 @@ def read_library(
 ) -> tuple[list[ZoteroPaper], list[tuple[str, str]]]:
     """Return (fetchable papers, skipped (title, reason) pairs)."""
     client = _client(library_id, library_type, api_key, local)
-    names = _collection_names(client)
 
     try:
+        names = _collection_names(client)
         if collection:
             matches = [key for key, name in names.items() if name.lower() == collection.lower()]
             if not matches:

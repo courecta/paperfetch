@@ -48,15 +48,10 @@ def fetch_papers(
     from .runtime import default_fetch_options
 
     options = options or default_fetch_options(library_dir)
-    results = fetch_and_record(papers, options)
-    conn = connect(library_dir)
-    try:
-        for result in results:
-            if result.success and not result.dry_run:
-                db_module.index_bundle(conn, library_dir, result.key)
-    finally:
-        conn.close()
-    return results
+    # fetch_and_record already indexes each updated key through
+    # locked_merge_index; re-indexing here doubled the work, and index_bundle
+    # re-reads document.json and paper.md and rewrites every FTS row.
+    return fetch_and_record(papers, options)
 
 
 def list_papers(

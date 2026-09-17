@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -152,10 +153,21 @@ def _iter_images(node: dict[str, Any]) -> Iterator[tuple[str, str]]:
         yield f"{_node_id(node) or 'image'}", single
 
 
+KNOWN_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+
 def _safe_name(raw: str, suffix: str = ".png") -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in raw).strip("-")
-    cleaned = cleaned[:60] or "image"
-    return cleaned if cleaned.lower().endswith((".png", ".jpg", ".jpeg", ".webp")) else f"{cleaned}{suffix}"
+    """Sanitize an image name, keeping its real extension.
+
+    The extension has to be split off first: sanitizing replaces '.' with '-',
+    so checking afterwards could never match and every image -- JPEG included
+    -- was written as .png.
+    """
+    lowered = raw.lower()
+    extension = next((ext for ext in KNOWN_IMAGE_SUFFIXES if lowered.endswith(ext)), suffix)
+    stem = raw[: -len(extension)] if lowered.endswith(extension) else raw
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in stem).strip("-")
+    return (cleaned[:60] or "image") + extension
 
 
 def _table_html(node: dict[str, Any]) -> str:
@@ -320,11 +332,12 @@ class _MarkerAdapter:
             if _block_type(child) in CAPTION_TYPES:
                 text = _text_of(child)
                 label = None
-                lowered = text.lower()
-                for prefix in ("figure", "fig.", "table"):
-                    if lowered.startswith(prefix):
-                        label = text.split(":")[0].strip() or None
-                        break
+                # "Figure 1: ..." and "Figure 1. ..." are both common; without
+                # the second form the entire caption became the label, and was
+                # then printed twice by the markdown renderer.
+                match = re.match(r"\s*((?:figure|fig\.?|table)\s*[0-9IVXivx]+)", text, re.IGNORECASE)
+                if match:
+                    label = match.group(1).strip()
                 return text, label
         return "", None
 
@@ -407,6 +420,9 @@ class _MarkerAdapter:
                 self.blocks.append(
                     Block(kind="paragraph", id=_node_id(node) or self._next_id("li"), inlines=_inlines(text))
                 )
+            elif _children(node):
+                for child in _children(node):
+                    self.visit(child)
             return
 
         if kind in TEXT_TYPES:
@@ -415,6 +431,12 @@ class _MarkerAdapter:
                 self.blocks.append(
                     Block(kind="paragraph", id=_node_id(node) or self._next_id("p"), inlines=_inlines(text))
                 )
+            elif _children(node):
+                # ComplexRegion is a container whose own html is a
+                # <content-ref> placeholder; returning here dropped its whole
+                # subtree while coverage still reported 1.0.
+                for child in _children(node):
+                    self.visit(child)
             return
 
         # Containers (Document/Page/ListGroup) and anything unrecognized: recurse.

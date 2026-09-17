@@ -118,6 +118,7 @@ def render_pdf_visuals(
     *,
     page_dpi: int = 120,
     crop_dpi: int = 180,
+    page_images: bool = False,
 ) -> dict[str, Any]:
     if not pdf_path.exists():
         return {"available": False, "reason": "PDF missing"}
@@ -139,12 +140,14 @@ def render_pdf_visuals(
     }
 
     try:
-        for page_index in range(len(pdf)):
-            page = pdf[page_index]
-            image = page.render(scale=page_dpi / 72.0).to_pil()
-            page_path = paths.pages_dir / f"page-{page_index + 1:03d}.png"
-            image.save(page_path)
-            report["pages"].append(f"pages/{page_path.name}")
+        # Full-page renders are the largest thing in a bundle (~25% of a
+        # library) and no tool, route or index reads them, so they are opt-in.
+        if page_images:
+            for page_index in range(len(pdf)):
+                image = pdf[page_index].render(scale=page_dpi / 72.0).to_pil()
+                page_path = paths.pages_dir / f"page-{page_index + 1:03d}.png"
+                image.save(page_path)
+                report["pages"].append(f"pages/{page_path.name}")
 
         for element_id, kind, bbox, page_index in _float_targets(document):
             if not 0 <= page_index < len(pdf):

@@ -67,15 +67,30 @@ def start_fetch_job(
     path = job_path(library_dir, job_id)
     write_json_atomic(path, record)
 
-    # Detached so the job outlives the client that asked for it.
-    subprocess.Popen(
-        [sys.executable, "-m", "paperfetch_app.jobs", str(path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-        cwd=os.getcwd(),
-    )
+    # Keep the runner's stderr: a child that dies on startup (an interpreter
+    # that cannot import paperfetch_app, say) would otherwise leave the job
+    # reading "pending (0/N)" forever with no diagnostic anywhere.
+    log_path = path.with_suffix(".log")
+    try:
+        with log_path.open("wb") as log:
+            process = subprocess.Popen(
+                [sys.executable, "-m", "paperfetch_app.jobs", str(path)],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                cwd=os.getcwd(),
+            )
+    except OSError as exc:
+        record["state"] = "failed"
+        record["error"] = f"could not start the job runner: {exc}"
+        record["finished_at"] = now_utc_iso()
+        write_json_atomic(path, record)
+        return record
+
+    record["pid"] = process.pid
+    record["log"] = str(log_path)
+    write_json_atomic(path, record)
     return record
 
 
@@ -93,9 +108,30 @@ def list_jobs(library_dir: Path, *, limit: int = 20) -> list[dict[str, Any]]:
     return live[:limit]
 
 
+def _looks_dead(record: dict[str, Any]) -> bool:
+    """True when a non-terminal job has no live runner behind it."""
+    pid = record.get("pid")
+    if record.get("state") in TERMINAL_STATES or not isinstance(pid, int):
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def describe(record: dict[str, Any]) -> str:
     """One-line human/agent readable summary."""
     state = record.get("state")
+    if _looks_dead(record):
+        log = record.get("log")
+        return (
+            f"job {record.get('id')}: runner exited without finishing "
+            f"({record.get('done', 0)}/{record.get('total', 0)})"
+            + (f"; see {log}" if log else "")
+        )
     done, total = record.get("done", 0), record.get("total", 0)
     parts = [f"job {record.get('id')}: {state} ({done}/{total})"]
     if record.get("succeeded"):

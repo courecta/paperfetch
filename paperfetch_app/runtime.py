@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
-from .config import get_default_marker_venv
+from .config import get_default_marker_venv, get_library_db_path
 from .locking import file_lock
 from .models import FetchOptions, PaperInput, ProcessResult
 from .pipeline import run_fetch
@@ -77,15 +78,18 @@ def locked_merge_index(library_dir: Path, updates: dict[str, dict[str, Any]], *,
     try:
         from . import db as db_module
 
-        conn = db_module.connect(library_dir / "library.sqlite3")
+        conn = db_module.connect(get_library_db_path(library_dir))
         db_module.init_db(conn)
         try:
             for key in updates:
                 db_module.index_bundle(conn, library_dir, key)
         finally:
             conn.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        # Swallowing this silently desynchronised library.sqlite3 from
+        # index.json: fetches reported [ok] while the papers stayed invisible
+        # to grep/outline/read forever, with no diagnostic anywhere.
+        print(f"[paperfetch] warning: search index not updated: {exc}", file=sys.stderr, flush=True)
 
 
 def fetch_and_record(
