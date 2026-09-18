@@ -197,3 +197,43 @@ def clean_library(
         "removed_orphans": removed_orphans,
         "unindexed_bundles": unindexed,
     }
+
+
+# Files a bundle can lose without losing what the agent reads. paper.md,
+# paper.txt, document.json, tables/, figures/ and the manifests all stay.
+PRUNABLE = {
+    "pdf": ("paper.pdf",),
+    "pages": ("pages",),
+    "source": ("source.html",),
+    "converted": ("converted", "converted-pymupdf"),
+}
+
+
+def prune_bundles(library_dir: Path, kinds: list[str], *, dry_run: bool = False) -> dict[str, Any]:
+    """Delete regenerable heavyweight files from every bundle.
+
+    Re-extraction needs the PDF, so pruning it means any later re-run has to
+    download the paper again -- and a paper can disappear from its host. The
+    caller is expected to have re-extracted first.
+    """
+    targets: list[str] = []
+    for kind in kinds:
+        targets.extend(PRUNABLE[kind])
+
+    freed = 0
+    removed = 0
+    for meta in sorted(library_dir.glob("*/meta.json")):
+        bundle = meta.parent
+        for name in targets:
+            path = bundle / name
+            if not path.exists():
+                continue
+            if path.is_dir():
+                size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+            else:
+                size = path.stat().st_size
+            freed += size
+            removed += 1
+            if not dry_run:
+                shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink(missing_ok=True)
+    return {"removed": removed, "freed_bytes": freed, "dry_run": dry_run}

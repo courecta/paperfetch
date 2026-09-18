@@ -247,3 +247,54 @@ class TestAtomicWrites:
         assert not errors
         assert isinstance(read_json(target), dict)
         assert not list(tmp_path.glob("*.tmp"))
+
+
+class TestPrune:
+    def _bundle(self, root: Path, key: str) -> Path:
+        b = root / key
+        (b / "pages").mkdir(parents=True)
+        (b / "tables").mkdir()
+        (b / "meta.json").write_text("{}")
+        (b / "paper.pdf").write_bytes(b"%PDF" + b"x" * 500)
+        (b / "paper.md").write_text("# paper")
+        (b / "pages" / "page-001.png").write_bytes(b"png" * 100)
+        (b / "tables" / "t1.csv").write_text("a,b")
+        return b
+
+    def test_default_prune_keeps_everything_the_agent_reads(self, tmp_path: Path):
+        from paperfetch_app.storage import prune_bundles
+
+        b = self._bundle(tmp_path, "k")
+        prune_bundles(tmp_path, ["pages", "converted"])
+        assert not (b / "pages").exists()
+        assert (b / "paper.md").is_file()
+        assert (b / "paper.pdf").is_file()
+        assert (b / "tables" / "t1.csv").is_file()
+
+    def test_dry_run_changes_nothing(self, tmp_path: Path):
+        from paperfetch_app.storage import prune_bundles
+
+        b = self._bundle(tmp_path, "k")
+        result = prune_bundles(tmp_path, ["pdf"], dry_run=True)
+        assert result["freed_bytes"] > 0
+        assert (b / "paper.pdf").is_file()
+
+    def test_pruning_the_pdf_leaves_the_markdown(self, tmp_path: Path):
+        from paperfetch_app.storage import prune_bundles
+
+        b = self._bundle(tmp_path, "k")
+        prune_bundles(tmp_path, ["pdf"])
+        assert not (b / "paper.pdf").exists()
+        assert (b / "paper.md").is_file()
+
+
+class TestReextractUsesTheStoredPdf:
+    def test_existing_pdf_is_seeded_into_staging(self, tmp_path: Path):
+        """Staging starts empty, so reextract used to re-download every PDF."""
+        import inspect
+
+        from paperfetch_app import pipeline
+
+        src = inspect.getsource(pipeline.process_one)
+        assert "shutil.copy2(final.pdf, staging.pdf)" in src
+        assert "options.force_download" in src

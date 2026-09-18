@@ -39,7 +39,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "urls": {"type": "array", "items": {"type": "string"}, "description": "Paper URLs or identifiers"},
-                "extractor": {"type": "string", "enum": ["auto", "arxiv_html", "marker"], "default": "auto"},
+                "extractor": {"type": "string", "enum": ["marker", "arxiv_html", "auto"], "default": "marker"},
                 "force_download": {"type": "boolean", "default": False},
                 "refresh_md": {"type": "boolean", "default": False},
                 "background": {
@@ -229,7 +229,7 @@ def _handle_tool(
             raise PaperfetchError("No URLs provided")
         options = default_fetch_options(
             library_dir,
-            extractor=str(arguments.get("extractor", "auto")),
+            extractor=str(arguments.get("extractor", "marker")),
             force_download=bool(arguments.get("force_download", False)),
             refresh_md=bool(arguments.get("refresh_md", False)),
             marker_venv=marker_venv,
@@ -242,7 +242,7 @@ def _handle_tool(
             record = start_fetch_job(
                 library_dir,
                 urls,
-                extractor=str(arguments.get("extractor", "auto")),
+                extractor=str(arguments.get("extractor", "marker")),
                 out_dir=out_dir,
                 project_files=project_files,
                 marker_venv=marker_venv,

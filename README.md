@@ -15,12 +15,16 @@ Most paper-to-markdown tools silently drop tables, equations, and figures.
 paperfetch treats those as first-class data and keeps the raw source around, so
 an agent can always fall back to the original rendering.
 
-- **arXiv HTML (LaTeXML)** parsed into a typed IR: sections, paragraphs,
-  inline/display LaTeX, tables with rowspan/colspan, figures with all panels,
-  footnotes, citations, bibliography, algorithms/listings.
-- **Marker** for any PDF: a layout model over the PDF's own text layer, mapped
-  into the same IR, so figures keep their captions, tables keep their spans,
-  and equations stay LaTeX. Installed lazily into an isolated venv.
+- **Marker** for every paper by default: a layout model over the PDF's own text
+  layer, mapped into a typed IR, so figures keep their captions, tables keep
+  their spans and come out as clean values, and equations become their own
+  blocks with bounding boxes for exact crops. Installed lazily into an
+  isolated venv.
+- **arXiv HTML (LaTeXML)** is available via `--extractor auto`, which prefers
+  it when arXiv has it. It carries more inline math, but LaTeXML leaks raw
+  markup into table cells -- a checkmark arrives as
+  `${{\color[rgb]{0.25,0.5117,0.4258}\large\checkmark}}$` -- so tables read
+  badly. Marker is the default for that reason.
 - **Universal resolvers**: arXiv, DOI (Crossref + OpenAlex + Unpaywall +
   Semantic Scholar), OpenReview, PubMed Central, bioRxiv/medRxiv, ACL, PMLR,
   CVF, JMLR, NeurIPS, plus generic Highwire/JSON-LD landing pages.
@@ -118,7 +122,8 @@ clipping or including a neighbour.
 | `list` / `inspect` | Browse the library and bundles |
 | `reextract` | Re-run extraction with a different backend |
 | `export` | BibTeX export (collision-free keys) |
-| `clean` | Prune missing entries and orphans |
+| `clean` | Prune missing index entries and non-bundle directories |
+| `prune` | Delete regenerable heavyweight files (page renders, PDFs) |
 | `migrate` | Convert legacy flat libraries to bundles |
 | `serve` | FastAPI HTTP API |
 | `mcp` | MCP server over stdio |
@@ -127,7 +132,7 @@ clipping or including a neighbour.
 Useful flags:
 
 ```bash
-paperfetch fetch --url <url> --extractor auto|arxiv_html|marker
+paperfetch fetch --url <url> --extractor marker|arxiv_html|auto
 paperfetch fetch --url <url> --pdf ./authorized-copy.pdf   # skip downloading
 paperfetch fetch --url <url> --min-coverage 0.95 --allow-incomplete
 paperfetch fetch --url <url> --no-figures --no-pdf-visual

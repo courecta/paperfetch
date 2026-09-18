@@ -182,7 +182,7 @@ def create_app(library_dir: Path, marker_venv: Path | None = None) -> FastAPI:
     class FetchRequest(BaseModel):
         urls: list[str] = Field(default_factory=list)
         titles: dict[str, str] = Field(default_factory=dict)
-        extractor: str = "auto"
+        extractor: str = "marker"
         force_download: bool = False
         refresh_md: bool = False
         allow_incomplete: bool = False

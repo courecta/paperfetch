@@ -36,7 +36,7 @@ def start_fetch_job(
     library_dir: Path,
     urls: list[str],
     *,
-    extractor: str = "auto",
+    extractor: str = "marker",
     out_dir: Path | None = None,
     project_files: str = "none",
     marker_venv: Path | None = None,
@@ -160,7 +160,7 @@ def _run(path: Path) -> int:
     try:
         options = default_fetch_options(
             library_dir,
-            extractor=record.get("extractor", "auto"),
+            extractor=record.get("extractor", "marker"),
             out_dir=Path(record["out_dir"]) if record.get("out_dir") else None,
             project_files=record.get("project_files", "none"),
             marker_venv=Path(record["marker_venv"]) if record.get("marker_venv") else None,

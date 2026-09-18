@@ -14,7 +14,7 @@ from .storage import index_path, load_index, save_index
 def default_fetch_options(
     library_dir: Path,
     *,
-    extractor: str = "auto",
+    extractor: str = "marker",
     force_download: bool = False,
     refresh_md: bool = False,
     verbose: bool = False,

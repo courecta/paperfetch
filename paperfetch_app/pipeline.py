@@ -355,6 +355,14 @@ def process_one(
     try:
         with file_lock(lock_path, timeout_sec=180.0):
             with staging_bundle(options.library_dir, key) as staging:
+                # Re-extraction should use the PDF the bundle already holds.
+                # Staging starts empty, so without this every reextract
+                # re-downloaded a file sitting on disk -- wasteful, rate
+                # limited, and impossible once a paper leaves its host.
+                if final.pdf.is_file() and not options.force_download and options.pdf_path is None:
+                    ensure_dir(staging.pdf.parent)
+                    shutil.copy2(final.pdf, staging.pdf)
+
                 if final.meta.exists() and not options.refresh_md and not options.force_download:
                     from .io_utils import read_json
 

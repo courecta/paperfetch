@@ -43,6 +43,7 @@ COMMANDS = {
     "reextract",
     "clean",
     "export",
+    "prune",
     "discover",
     "citations",
     "zotero",
@@ -65,7 +66,12 @@ def _add_common_io_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_extraction_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--extractor", choices=["auto", "arxiv_html", "marker"], default="auto")
+    parser.add_argument(
+        "--extractor",
+        choices=["marker", "arxiv_html", "auto"],
+        default="marker",
+        help="marker (default) runs the layout model on every paper; auto prefers arXiv HTML when available",
+    )
     parser.add_argument("--marker-venv", type=Path, default=DEFAULT_MARKER_VENV)
     parser.add_argument("--no-install-marker", action="store_true")
     parser.add_argument("--min-coverage", type=float, default=0.95)
@@ -141,6 +147,20 @@ def _build_parser() -> argparse.ArgumentParser:
     clean.add_argument("--library-dir", type=Path, default=DEFAULT_LIBRARY_DIR)
     clean.add_argument("--prune-missing-entries", action="store_true")
     clean.add_argument("--remove-orphans", action="store_true")
+
+    prune_cmd = subparsers.add_parser(
+        "prune", help="Delete regenerable heavyweight files (PDFs, page renders) from bundles."
+    )
+    prune_cmd.add_argument("--library-dir", type=Path, default=DEFAULT_LIBRARY_DIR)
+    prune_cmd.add_argument(
+        "--kind",
+        action="append",
+        choices=["pdf", "pages", "source", "converted"],
+        default=[],
+        help="Repeatable; defaults to pages and converted, which nothing reads",
+    )
+    prune_cmd.add_argument("--dry-run", action="store_true")
+    prune_cmd.add_argument("--yes", action="store_true", help="Required to prune pdf or source")
 
     export_cmd = subparsers.add_parser("export", help="Export library entries to BibTeX.")
     export_cmd.add_argument("--library-dir", type=Path, default=DEFAULT_LIBRARY_DIR)
@@ -430,6 +450,30 @@ def _run_reextract(args: argparse.Namespace) -> int:
 
     print(f"Reextracted {len(results)} papers, failures={failures}")
     return 1 if failures else 0
+
+
+def _run_prune(args: argparse.Namespace) -> int:
+    from .storage import prune_bundles
+
+    library_dir = args.library_dir.expanduser().resolve()
+    kinds = args.kind or ["pages", "converted"]
+
+    # Losing the PDF or the raw source means a later re-extraction has to
+    # re-download the paper, which may no longer be available.
+    risky = [k for k in kinds if k in {"pdf", "source"}]
+    if risky and not args.yes and not args.dry_run:
+        print(
+            f"Pruning {', '.join(risky)} makes re-extraction depend on re-downloading each paper.",
+            file=sys.stderr,
+        )
+        print("Re-extract first if you plan to, then pass --yes.", file=sys.stderr)
+        return 1
+
+    summary = prune_bundles(library_dir, kinds, dry_run=args.dry_run)
+    freed = summary["freed_bytes"] / (1024 * 1024)
+    verb = "would free" if summary["dry_run"] else "freed"
+    print(f"{summary['removed']} item(s), {verb} {freed:.0f} MB ({', '.join(kinds)})")
+    return 0
 
 
 def _run_export(args: argparse.Namespace) -> int:
@@ -774,6 +818,7 @@ def main(argv: list[str] | None = None) -> int:
         "reextract": _run_reextract,
         "clean": _run_clean,
         "export": _run_export,
+        "prune": _run_prune,
         "discover": _run_discover,
         "citations": _run_citations,
         "zotero": _run_zotero,

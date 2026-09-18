@@ -48,7 +48,11 @@ class FetchOptions:
     marker_backoff: float = 2.0
     workers: int = 4
     verbose: bool = False
-    extractor: str = "auto"  # auto | arxiv_html | marker
+    # marker by default: one layout model over the PDF gives every paper the
+    # same structure, bounding boxes for exact crops, and equations as their
+    # own blocks. "auto" keeps the older behaviour of preferring arXiv HTML
+    # when it exists, which varies with LaTeXML conversion quality.
+    extractor: str = "marker"  # marker | arxiv_html | auto
     min_coverage: float = 0.95
     allow_incomplete: bool = False
     download_figures: bool = True

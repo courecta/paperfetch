@@ -69,7 +69,7 @@ def build_fastmcp_server(
     @server.tool()
     def paperfetch_fetch(
         urls: list[str],
-        extractor: str = "auto",
+        extractor: str = "marker",
         force_download: bool = False,
         refresh_md: bool = False,
         background: bool = True,
