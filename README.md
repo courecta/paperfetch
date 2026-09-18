@@ -27,7 +27,10 @@ an agent can always fall back to the original rendering.
   badly. Marker is the default for that reason.
 - **Universal resolvers**: arXiv, DOI (Crossref + OpenAlex + Unpaywall +
   Semantic Scholar), OpenReview, PubMed Central, bioRxiv/medRxiv, ACL, PMLR,
-  CVF, JMLR, NeurIPS, plus generic Highwire/JSON-LD landing pages.
+  CVF, JMLR, NeurIPS, plus generic Highwire/JSON-LD landing pages. Publisher
+  links that carry a DOI in the path (Springer, Wiley, ACM, Taylor & Francis,
+  SAGE) are read as that DOI, and a paywalled DOI falls back to its arXiv
+  preprint when one exists.
 - **Coverage gate**: extraction fails when source elements (math, figures,
   tables, bibliography, notes) are not accounted for in the IR, unless
   `--allow-incomplete` is passed. The raw source and PDF are always retained.

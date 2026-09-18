@@ -10,6 +10,22 @@ ARXIV_ID_RE = re.compile(
     r"^(?P<id>(?:\d{4}\.\d{4,5}|[a-zA-Z][a-zA-Z.\-]+(?:\.[A-Z]{2})?/\d{7}))(?P<version>v\d+)?$"
 )
 DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
+# Many publishers put the DOI straight into the URL path: Springer
+# (/article/10.1007/...), Wiley, ACM, Taylor & Francis, SAGE. Recognising it
+# routes the paper through the DOI resolver -- Crossref, OpenAlex, Unpaywall
+# and Semantic Scholar -- instead of scraping a landing page that is usually
+# behind Cloudflare, so metadata is recovered even when the PDF is paywalled.
+DOI_IN_PATH_RE = re.compile(r"(10\.\d{4,9}/[^/?#]+(?:/[^/?#]+)*)", re.IGNORECASE)
+DOI_PATH_HOSTS = (
+    "link.springer.com",
+    "onlinelibrary.wiley.com",
+    "dl.acm.org",
+    "tandfonline.com",
+    "journals.sagepub.com",
+    "pubs.acs.org",
+    "iopscience.iop.org",
+    "royalsocietypublishing.org",
+)
 PMCID_RE = re.compile(r"^(?:PMC)?(?P<number>\d{6,9})$", re.IGNORECASE)
 
 TRACKING_QUERY_PREFIXES = ("utm_",)
@@ -145,6 +161,11 @@ def build_identity(url: str) -> PaperIdentity:
 
     if _host_matches(host, "papers.nips.cc"):
         return _proceedings_identity("neurips", host, path, suffix=".pdf")
+
+    if any(_host_matches(host, publisher) for publisher in DOI_PATH_HOSTS):
+        found = DOI_IN_PATH_RE.search(path)
+        if found:
+            return _doi_identity(found.group(1).rstrip(").,;"))
 
     canonical = canonicalize_url(raw)
     fingerprint = f"url:{canonical.lower()}"

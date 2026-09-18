@@ -83,11 +83,16 @@ def _s2_pdf(doi: str, client: HttpClient) -> tuple[str | None, dict[str, Any]]:
     if not isinstance(data, dict):
         return None, {}
     pdf = (data.get("openAccessPdf") or {}).get("url")
+    external = data.get("externalIds") or {}
     metadata = {
         "title": data.get("title"),
         "year": data.get("year"),
         "venue": data.get("venue"),
         "abstract": data.get("abstract"),
+        # The preprint is often the only copy that can actually be fetched:
+        # publisher sites serve anti-bot interstitials or paywalls, while
+        # arXiv serves the PDF directly.
+        "arxiv_id": external.get("ArXiv") or external.get("arXiv"),
     }
     return pdf, {key: value for key, value in metadata.items() if value}
 
@@ -136,6 +141,13 @@ def resolve_doi_like(identity: PaperIdentity, client: HttpClient) -> Resolution:
 
     try:
         s2_pdf, s2_meta = _s2_pdf(doi, client)
+        arxiv_id = s2_meta.pop("arxiv_id", None)
+        if arxiv_id:
+            # Ahead of the publisher copy: arXiv is reliably fetchable, and for
+            # a paywalled DOI it is usually the only copy that is.
+            pdf_urls.insert(0, f"https://arxiv.org/pdf/{arxiv_id}")
+            resolution.metadata.setdefault("arxiv_id", arxiv_id)
+            resolution.notes.append(f"using the arXiv preprint {arxiv_id} for the PDF")
         if s2_pdf:
             pdf_urls.append(s2_pdf)
         for key, value in s2_meta.items():

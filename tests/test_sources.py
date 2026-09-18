@@ -145,3 +145,50 @@ class TestDiscoveredUrls:
 
         paper = _to_discovered({"title": "T", "paperId": "abc123"})
         assert paper.url == "https://www.semanticscholar.org/paper/abc123"
+
+
+class TestPublisherUrls:
+    """Publisher URLs embed the DOI; reading it routes them to the DOI resolver."""
+
+    @pytest.mark.parametrize(
+        "url,doi",
+        [
+            ("https://link.springer.com/article/10.1007/s11263-021-01466-8", "10.1007/s11263-021-01466-8"),
+            ("https://link.springer.com/chapter/10.1007/978-3-031-19821-2_29", "10.1007/978-3-031-19821-2_29"),
+            ("https://onlinelibrary.wiley.com/doi/10.1002/aisy.202100116", "10.1002/aisy.202100116"),
+            ("https://dl.acm.org/doi/10.1145/3503161.3548024", "10.1145/3503161.3548024"),
+        ],
+    )
+    def test_doi_is_read_out_of_the_path(self, url, doi):
+        identity = build_identity(url)
+        assert identity.kind == "doi"
+        assert identity.value == doi
+
+    def test_publisher_url_and_bare_doi_are_the_same_paper(self):
+        """Otherwise the same paper is ingested twice under two keys."""
+        a = build_identity("https://link.springer.com/article/10.1007/s11263-021-01466-8")
+        b = build_identity("https://doi.org/10.1007/s11263-021-01466-8")
+        assert a.key == b.key
+
+    def test_unknown_publisher_is_left_as_a_url(self):
+        identity = build_identity("https://example.com/some/article")
+        assert identity.kind == "url"
+
+
+class TestPreprintFallback:
+    def test_arxiv_id_becomes_the_preferred_pdf_candidate(self):
+        """Publishers serve paywalls or anti-bot pages; arXiv serves the PDF."""
+        from paperfetch_app.resolve.doi import _s2_pdf
+
+        class FakeClient:
+            def get_json(self, url, **kwargs):
+                return {
+                    "title": "A paper",
+                    "year": 2021,
+                    "openAccessPdf": None,
+                    "externalIds": {"ArXiv": "1908.00682", "DOI": "10.1007/x"},
+                }
+
+        pdf, meta = _s2_pdf("10.1007/x", FakeClient())
+        assert pdf is None
+        assert meta["arxiv_id"] == "1908.00682"
